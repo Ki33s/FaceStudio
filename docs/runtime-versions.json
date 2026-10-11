@@ -1,0 +1,7 @@
+{
+  "python": "3.12.14",
+  "facefusion": "3.9.1",
+  "gradio": "5.50.0",
+  "onnxruntime_directml": "1.24.4",
+  "ffmpeg": "9.0.2"
+}
