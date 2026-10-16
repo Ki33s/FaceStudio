@@ -24,6 +24,7 @@ import gradio as gr
 from ollama_local import ensure_running,interpret,choose_model,release_model
 from video_tools import metadata,verify,join_patch
 from protected_ranges import normalize_ranges
+from quality import render_settings
 
 LOCK=threading.Lock()
 STATUS='Проверка Ollama…'
@@ -36,10 +37,11 @@ def startup_check():
 
 
 def render_once(project,folder,start=0,end=None,strong=False,progress=None,target_ids=None,base_target=None,base_start_frame=0,chunked=False):
+    settings=render_settings(project.get('processing_profile'))
     meta=metadata(project['target'])
     output=folder/'render.mp4'
     job={'sources':project['sources'],'target':project['target'],'output':str(output),
-        'fps':meta['fps'],'start_frame':start,'end_frame':end,'strong':strong,
+        'fps':meta['fps'],'start_frame':start,'end_frame':end,'strong':strong,'processing_profile':settings['id'],
         'excluded_ranges':project.get('excluded_ranges',[]),'base_start_frame':base_start_frame,'chunked':chunked,'verified_scan':chunked}
     if project.get('people_path'):
         job.update(people_path=project['people_path'],assignments=project['assignments'],
@@ -60,6 +62,9 @@ def render_once(project,folder,start=0,end=None,strong=False,progress=None,targe
         raise RuntimeError('Обработка не завершилась. Лог: '+str(folder/'engine.log')+'\n'+tail)
     verify(output)
     geometry=json.loads((folder/'geometry.json').read_text(encoding='utf-8'))
+    geometry['processing_profile']=settings['id']
+    geometry['render_settings']=settings
+    (folder/'geometry.json').write_text(json.dumps(geometry,ensure_ascii=False,indent=2),encoding='utf-8')
     return output,geometry
 
 
@@ -124,6 +129,8 @@ def report_text(meta,geometry,vision,notes):
     text=f"Видео проверено: {meta['width']}×{meta['height']}, {meta['duration']:.2f} с. Звук: {'есть' if meta['audio'] else 'нет в исходнике'}.\n\n"
     text+='Декодирование и длительность проверены. '
     if geometry:
+        if geometry.get('processing_profile')=='quality-v1':
+            text+='Режим качества: 512×512, новая маска перекрытий для каждого лица на каждом кадре. '
         text+=f"Разметка проверялась на участке {geometry['start_frame']/meta['fps']:.1f}–{geometry['end_frame']/meta['fps']:.1f} с. "
         a,b=geometry.get('raw_median_px'),geometry.get('stable_median_px')
         if a is not None and b is not None:

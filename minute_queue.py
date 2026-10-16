@@ -87,6 +87,12 @@ def summarize(report_paths, start, end):
     replacement={'sampled_frames':0,'changed_frames':0,'people':checks}
     for path in report_paths:
         report=json.loads(Path(path).read_text(encoding='utf-8'))
+        profile=report.get('processing_profile')
+        if 'processing_profile' not in geometry:
+            geometry['processing_profile']=profile
+            geometry['render_settings']=report.get('render_settings')
+        elif geometry['processing_profile']!=profile:
+            raise RuntimeError('Нельзя объединять части, сделанные с разным качеством.')
         for item in report.get('residuals',[]):
             seen+=1;pair=(item['before'],item['after'])
             if len(sample)<20000: sample.append(pair)
@@ -121,6 +127,8 @@ def summarize(report_paths, start, end):
 
 def render_minutes(project, folder, render_one, start=0, end=None, strong=False,
                    progress=None, target_ids=None, base_target=None, checkpoint=None):
+    from quality import render_settings
+    settings=render_settings(project.get('processing_profile'))
     folder = Path(folder);folder.mkdir(parents=True,exist_ok=True);meta = metadata(project['target']);fps = meta['fps']
     total = meta['frames'] or round(meta['duration']*fps)
     end = min(end or total,total)
@@ -185,6 +193,10 @@ def render_minutes(project, folder, render_one, start=0, end=None, strong=False,
                     if project.get('people_path') and report.get('tracking_version',0)<4:
                         # Old completed parts contain the recognition gaps; a
                         # resume must render them with the corrected tracker.
+                        report=None
+                    if report is not None and report.get('processing_profile')!=settings['id']:
+                        # Keep the timeline checkpoint and identity assignments,
+                        # but never silently reuse lower-quality encoded parts.
                         report=None
             except (ValueError,OSError,subprocess.SubprocessError): pass
         def part_progress(value=None,desc=''):

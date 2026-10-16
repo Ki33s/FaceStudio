@@ -62,7 +62,7 @@ def prepare_timeline(path,folder,progress=None):
     if not variable: return str(path)
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     prepared=folder/'timeline.mp4';manifest=folder/'timeline.json'
-    signature={'version':1,'source':fingerprint(path)}
+    signature={'version':2,'source':fingerprint(path)}
     if prepared.exists() and manifest.exists():
         saved=json.loads(manifest.read_text(encoding='utf-8'))
         if saved.get('signature')==signature and saved.get('size')==prepared.stat().st_size: return str(prepared)
@@ -70,7 +70,7 @@ def prepare_timeline(path,folder,progress=None):
     temporary=folder/'timeline-building.mp4'
     if progress: progress(None,desc='Подготовка временной шкалы видео с переменной частотой кадров…')
     result=subprocess.run([FFMPEG,'-v','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
-        '-vf',f'fps={rate}:start_time=0','-fps_mode','cfr','-c:v','libx264','-crf','18','-preset','fast',
+        '-vf',f'fps={rate}:start_time=0','-fps_mode','cfr','-c:v','libx264','-crf','10','-preset','slow',
         '-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-movflags','+faststart',str(temporary)],capture_output=True,creationflags=FLAGS)
     if result.returncode: raise RuntimeError('Не удалось подготовить видео: '+result.stderr.decode('utf-8',errors='replace')[-1000:])
     checked=verify(temporary,meta)
@@ -105,7 +105,7 @@ def join_patch(original, patch, output, start, end):
     fpsrate=json.loads(subprocess.check_output([FFPROBE,'-v','error','-select_streams','v:0','-show_entries','stream=avg_frame_rate','-of','json',str(original)],creationflags=FLAGS))['streams'][0]['avg_frame_rate']
     writer=subprocess.Popen([FFMPEG,'-v','error','-y','-f','rawvideo','-pix_fmt','bgr24','-s',f'{w}x{h}',
         '-r',fpsrate,'-i','pipe:0','-i',str(original),'-map','0:v:0','-map','1:a:0?',
-        '-c:v','libx264','-crf','10','-preset','fast','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart',str(output)],stdin=subprocess.PIPE,creationflags=FLAGS)
+        '-c:v','libx264','-crf','8','-preset','slow','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart',str(output)],stdin=subprocess.PIPE,creationflags=FLAGS)
     index=0
     try:
         while True:

@@ -73,7 +73,7 @@
     <Button x:Name="SwapButton" Content="Заменить лица" Style="{StaticResource Primary}" IsEnabled="False"/>
     <Button x:Name="ResumeButton" Content="Продолжить обработку" Style="{StaticResource Primary}" Margin="0,8,0,0" Visibility="Collapsed"/>
     <TextBlock Text="Обработка по 60 секунд. Каждая готовая часть сохраняется." FontSize="11" Foreground="#C2F36B" TextWrapping="Wrap" Margin="0,9,0,0"/>
-    <TextBlock Text="Без назначенного фото — без замены." FontSize="11" Foreground="#839079" TextWrapping="Wrap" Margin="0,9,0,20"/>
+    <TextBlock Text="Приоритет качества · 512×512 · обработка дольше. Без фото — без замены." FontSize="11" Foreground="#839079" TextWrapping="Wrap" Margin="0,9,0,20"/>
     <Border Height="1" Background="#30382F" Margin="0,0,0,18"/>
     <TextBlock Text="ПОСЛЕ ПРОСМОТРА" Foreground="#C2F36B" FontSize="11"/><TextBlock Text="Что исправить?" FontSize="18" FontWeight="SemiBold" Margin="0,7,0,10"/>
     <TextBox x:Name="Command" AcceptsReturn="True" MinHeight="104" Height="120" VerticalScrollBarVisibility="Auto" IsEnabled="False" AutomationProperties.Name="Описание исправления"/>

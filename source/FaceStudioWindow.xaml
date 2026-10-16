@@ -47,7 +47,7 @@
     <TextBlock Text="ЗАМЕНА ЛИЦ" Foreground="#C2F36B" FontSize="11"/><TextBlock Text="Назначьте новые лица" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,9"/>
     <TextBlock Text="Программа найдёт людей в видео. Выберите фотографию для каждого нужного человека." Foreground="#939E92" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,15"/>
     <Button x:Name="SwapButton" Content="Заменить лица" Style="{StaticResource Primary}" IsEnabled="False"/>
-    <TextBlock Text="Без назначенного фото — без замены." FontSize="11" Foreground="#839079" TextWrapping="Wrap" Margin="0,9,0,20"/>
+    <TextBlock Text="Приоритет качества · 512×512 · обработка дольше. Без фото — без замены." FontSize="11" Foreground="#839079" TextWrapping="Wrap" Margin="0,9,0,20"/>
     <Border Height="1" Background="#30382F" Margin="0,0,0,18"/>
     <TextBlock Text="ПОСЛЕ ПРОСМОТРА" Foreground="#C2F36B" FontSize="11"/><TextBlock Text="Что исправить?" FontSize="18" FontWeight="SemiBold" Margin="0,7,0,10"/>
     <TextBox x:Name="Command" AcceptsReturn="True" MinHeight="104" Height="120" VerticalScrollBarVisibility="Auto" IsEnabled="False" AutomationProperties.Name="Описание исправления"/>
