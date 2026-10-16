@@ -61,8 +61,12 @@ def prepare_timeline(path,folder,progress=None):
         if durations: variable=max(durations)-min(durations)>max(.001,.02/meta['fps'])
     if not variable: return str(path)
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
-    prepared=folder/'timeline.mp4';manifest=folder/'timeline.json'
+    prepared=folder/'timeline-v2.mp4';manifest=folder/'timeline-v2.json'
     signature={'version':2,'source':fingerprint(path)}
+    legacy=folder/'timeline.mp4';legacy_manifest=folder/'timeline.json'
+    if not prepared.exists() and legacy.is_file() and legacy_manifest.is_file():
+        old=json.loads(legacy_manifest.read_text(encoding='utf-8'))
+        if old.get('signature')==signature and old.get('size')==legacy.stat().st_size:return str(legacy)
     if prepared.exists() and manifest.exists():
         saved=json.loads(manifest.read_text(encoding='utf-8'))
         if saved.get('signature')==signature and saved.get('size')==prepared.stat().st_size: return str(prepared)

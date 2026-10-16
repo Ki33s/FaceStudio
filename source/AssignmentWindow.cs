@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Security.Cryptography;
 using System.Windows.Forms;
+using System.Web.Script.Serialization;
 
 internal sealed class AssignmentWindow : Form
 {
@@ -34,6 +35,9 @@ internal sealed class AssignmentWindow : Form
     private readonly ToolTip tips = new ToolTip();
     private readonly Dictionary<string,string> photoHashes = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
     private bool updating;
+    private readonly string draftPath;
+    private bool draftReady;
+    private string draftFingerprint, draftError;
     internal int PersonCount { get { return rows.Count; } }
     internal int VisibleCardCount { get { return groups.Count; } }
     internal bool CanStart { get { return start.Enabled; } }
@@ -60,16 +64,34 @@ internal sealed class AssignmentWindow : Form
         }
     }
     internal AssignmentWindow(object[] people,object[] saved) : this(people,saved,new object[0]) { }
-    internal AssignmentWindow(object[] people,object[] saved,object[] savedGroups)
+    internal AssignmentWindow(object[] people,object[] saved,object[] savedGroups) : this(people,saved,savedGroups,null) { }
+    internal AssignmentWindow(object[] people,object[] saved,object[] savedGroups,string draft)
     {
-        this.people=people;
+        this.people=people;draftPath=draft;
+        if(draftPath!=null) {
+            JavaScriptSerializer serializer=new JavaScriptSerializer { MaxJsonLength=Int32.MaxValue };
+            string analysis=Path.Combine(Path.GetDirectoryName(draftPath),"people.json");
+            if(File.Exists(analysis)) {
+                Dictionary<string,object> info=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(analysis));
+                draftFingerprint=Convert.ToString(info.ContainsKey("input_fingerprint")?info["input_fingerprint"]:info["fingerprint"]);
+            }
+            if(saved.Length==0&&File.Exists(draftPath)) {
+                Dictionary<string,object> value=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(draftPath));
+                HashSet<int> known=new HashSet<int>(),stored=new HashSet<int>();
+                foreach(object item in people)known.Add(Convert.ToInt32(((Dictionary<string,object>)item)["id"]));
+                if(value.ContainsKey("person_ids"))foreach(object id in (System.Collections.IEnumerable)value["person_ids"])stored.Add(Convert.ToInt32(id));
+                if(known.SetEquals(stored)&&value.ContainsKey("input_fingerprint")&&Convert.ToString(value["input_fingerprint"])==draftFingerprint) {
+                    saved=Objects(value["assignments"]);savedGroups=Objects(value["person_groups"]);
+                }
+            }
+        }
         Text="Кого заменить — FaceStudio";Font=new Font("Segoe UI",10);
         StartPosition=FormStartPosition.CenterParent;Size=new Size(1010,780);MinimumSize=new Size(900,580);
         BackColor=Color.FromArgb(17,21,18);ForeColor=Color.FromArgb(239,243,233);AutoScaleMode=AutoScaleMode.Dpi;
         TableLayoutPanel layout=new TableLayoutPanel { Dock=DockStyle.Fill,Padding=new Padding(18),ColumnCount=1,RowCount=4 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,60));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,84));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,56));
-        layout.Controls.Add(new Label { Text="Один человек в нескольких карточках? Отметьте их галочками и нажмите «Это один человек». Фото выбирается один раз для всей группы. Без фото — без замены.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft },0,0);
+        layout.Controls.Add(new Label { Text="Похожие появления объединяются по движению и внешности. Ошибочную группу можно разделить. Фото и группы сохраняются автоматически после каждого изменения. Без фото — без замены.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft },0,0);
         FlowLayoutPanel top=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true };
         merge=MakeButton("Это один человек",185);merge.Click+=delegate { MergeSelected(null,true); };
         selectedPhoto=MakeButton("Фото выбранным",175);selectedPhoto.Click+=delegate { string path=PickPhoto();if(path==null)return;foreach(List<PersonRow> group in SelectedGroups()) ApplyPhoto(group,new Photo { Primary=path });UpdateCount(); };
@@ -99,6 +121,20 @@ internal sealed class AssignmentWindow : Form
         start.Text="Начать";start.Dock=DockStyle.Fill;start.BackColor=Color.FromArgb(194,243,107);start.ForeColor=Color.FromArgb(23,34,14);start.FlatStyle=FlatStyle.Flat;
         start.Click+=delegate { if(Assignments.Length>0){ DialogResult=DialogResult.OK;Close(); } };bottom.Controls.Add(start,2,0);
         layout.Controls.Add(bottom,0,3);Controls.Add(layout);AcceptButton=start;CancelButton=back;RebuildCards();
+        draftReady=true;SaveDraft();FormClosing+=delegate { SaveDraft(); };
+    }
+    private static object[] Objects(object value) { List<object> result=new List<object>();if(value!=null)foreach(object item in (System.Collections.IEnumerable)value)result.Add(item);return result.ToArray(); }
+    private void SaveDraft()
+    {
+        if(!draftReady||draftPath==null)return;
+        try {
+            List<int> ids=new List<int>();foreach(PersonRow row in rows)ids.Add(row.Id);ids.Sort();
+            Dictionary<string,object> data=new Dictionary<string,object>{{"assignments",Assignments},{"person_groups",Groups},{"person_ids",ids.ToArray()},{"input_fingerprint",draftFingerprint},{"grouping_reviewed",true}};
+            string temporary=draftPath+".updating";Directory.CreateDirectory(Path.GetDirectoryName(draftPath));
+            File.WriteAllText(temporary,new JavaScriptSerializer { MaxJsonLength=Int32.MaxValue }.Serialize(data),new System.Text.UTF8Encoding(false));
+            if(File.Exists(draftPath))File.Replace(temporary,draftPath,null);else File.Move(temporary,draftPath);
+            draftError=null;
+        } catch(Exception error) { draftError="Не удалось сохранить назначения: "+error.Message; }
     }
     private void BuildCard(PersonRow row)
     {
@@ -194,7 +230,7 @@ internal sealed class AssignmentWindow : Form
     {
         PersonRow leader=group[0];List<string> ids=new List<string>();double first=Double.MaxValue,last=0;
         foreach(PersonRow row in group){ids.Add(row.Id.ToString());first=Math.Min(first,row.First);last=Math.Max(last,row.Last);}
-        leader.Caption.Text=(group.Count==1?"Карточка "+leader.Id:"Один человек\nКарточки "+String.Join(", ",ids.ToArray()))+"\n"+first.ToString("0.0")+"–"+last.ToString("0.0")+" с\n→";
+        leader.Caption.Text=(group.Count==1?"Появление "+leader.Id:"Человек "+leader.Id+"\nПоявлений: "+group.Count)+"\n"+first.ToString("0.0")+"–"+last.ToString("0.0")+" с\n→";
         tips.SetToolTip(leader.Caption,"Карточки: "+String.Join(", ",ids.ToArray()));
         if(group.Count==1)SetImage(leader.Original,leader.Thumbnail);else {
             Bitmap montage=new Bitmap(240,240);using(Graphics graphics=Graphics.FromImage(montage)){graphics.Clear(BackColor);int total=Math.Min(group.Count,6),columns=Math.Min(total,2),height=240/((total+columns-1)/columns),width=240/columns;
@@ -210,7 +246,8 @@ internal sealed class AssignmentWindow : Form
     {
         int assigned=Assignments.Length;List<List<PersonRow>> selected=SelectedGroups();bool hasGroup=false;foreach(List<PersonRow> group in selected)hasGroup|=group.Count>1;
         merge.Enabled=selected.Count>=2;split.Enabled=hasGroup;selectedPhoto.Enabled=unselect.Enabled=selected.Count>0;
-        count.Text="Карточек: "+rows.Count+". Групп: "+groups.Count+". Выбрано: "+selected.Count+".\nЗаменить: "+assigned+" карточек.";start.Enabled=assigned>0;
+        count.Text="Людей / групп: "+groups.Count+". Появлений: "+rows.Count+". Выбрано: "+selected.Count+".\nЗаменить: "+assigned+" появлений.";start.Enabled=assigned>0;
+        SaveDraft();if(draftError!=null)count.Text+="\n"+draftError;
     }
     private Button MakeButton(string text,int width) { return new RoundedButton { Text=text,Width=width,Height=33,FlatStyle=FlatStyle.Flat,BackColor=Color.FromArgb(26,32,27),Margin=new Padding(3) }; }
     private string PickPhoto() { using(OpenFileDialog dialog=new OpenFileDialog { Title="Фото для замены — лицо крупно",Filter="Фотографии|*.jpg;*.jpeg;*.png;*.webp;*.bmp" })return dialog.ShowDialog(this)==DialogResult.OK?dialog.FileName:null; }
@@ -254,6 +291,24 @@ internal sealed class AssignmentWindow : Form
     {
         ClearSelection();foreach(int id in ids)foreach(PersonRow row in rows)if(row.Id==id)GroupOf(row)[0].Selected.Checked=true;
         return MergeSelected(GroupOf(rows[0])[0].Photo.Copy(),false);
+    }
+    internal bool VerifyDraftPersistence(string directory)
+    {
+        Directory.CreateDirectory(directory);string path=Path.Combine(directory,"assignments.json");
+        File.WriteAllText(Path.Combine(directory,"people.json"),"{\"input_fingerprint\":\"diagnostic-draft\"}");
+        object[] photos=Assignments,originalGroups=Groups;
+        using(AssignmentWindow first=new AssignmentWindow(people,photos,originalGroups,path)) {
+            if(first.draftError!=null)return false;
+            using(AssignmentWindow restored=new AssignmentWindow(people,new object[0],new object[0],path))
+                if(restored.Assignments.Length!=photos.Length||restored.Groups.Length!=originalGroups.Length)return false;
+            if(first.rows.Count>0) {
+                int removed=0;foreach(PersonRow row in first.GroupOf(first.rows[0]))if(File.Exists(row.Photo.Primary))++removed;
+                first.ApplyPhoto(first.GroupOf(first.rows[0]),new Photo());first.UpdateCount();
+                using(AssignmentWindow restored=new AssignmentWindow(people,new object[0],new object[0],path))
+                    if(restored.Assignments.Length!=photos.Length-removed)return false;
+            }
+        }
+        using(AssignmentWindow final=new AssignmentWindow(people,photos,originalGroups,path))return final.draftError==null;
     }
     protected override void Dispose(bool disposing)
     {

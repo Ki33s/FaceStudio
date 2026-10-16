@@ -10,7 +10,7 @@ folder=Path(job['folder']);folder.mkdir(parents=True,exist_ok=True)
 os.environ['PATH']=str(ROOT/'runtime/bin')+os.pathsep+os.environ.get('PATH','')
 sys.path[:0]=[str(ROOT/'runtime/directml'),str(ROOT/'runtime/facefusion')]
 os.chdir(ROOT/'runtime/facefusion')
-sys.argv=['scan','headless-run','--execution-providers','directml',
+sys.argv=['scan','headless-run','--execution-providers',job.get('provider','directml'),
     '--face-detector-model','many','--face-detector-margin','60','60','60','60',
     '--face-detector-score','.35','--execution-thread-count','1']
 from facefusion.program import create_program
@@ -18,7 +18,8 @@ from facefusion.args import apply_args
 from facefusion import state_manager, face_store
 from facefusion.face_creator import get_static_faces
 from facefusion.vision import read_static_video_frame,write_image
-from people import Registry,pack_face,fingerprint
+from people import Registry,pack_face,fingerprint,unpack_face
+from face_motion import FaceMotion
 from minute_queue import atomic_json
 import numpy as np
 import cv2
@@ -31,7 +32,7 @@ meta=metadata(job['video'])
 
 total=meta['frames'] or round(meta['duration']*meta['fps'])
 start=job.get('start_frame',0);end=min(total,job.get('end_frame') or total)
-registry=Registry(meta['fps']);frames={};skipped=0
+registry=Registry(meta['fps']);motion=FaceMotion(meta['fps']);frames={};skipped=0
 previous_gray=None
 if start:
     previous=read_static_video_frame(job['video'],start-1)
@@ -43,16 +44,25 @@ if checkpoint.exists():
     if saved['next_frame']!=start: raise RuntimeError('Неверный порядок частей поиска людей.')
     registry.people=saved['people']
     for person in registry.people: person['vector']=np.asarray(person['vector'],np.float32)
+    if start and previous is not None:
+        from types import SimpleNamespace
+        motion.seed(previous,[(i+1,SimpleNamespace(bounding_box=np.asarray(p['track_box']),
+                    embedding_norm=np.asarray(p['track_embedding']))) for i,p in enumerate(registry.people)
+                    if p.get('last')==start-1 and 'track_box' in p],start-1)
 for index in range(start,end):
     frame=read_static_video_frame(job['video'],index)
     if frame is None: raise RuntimeError('Не удалось прочитать кадр '+str(index)+'. Готовые части поиска сохранены.')
     gray=cv2.resize(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),(32,32))
-    if previous_gray is not None and np.abs(gray.astype(float)-previous_gray).mean()>35:
-        registry.reset_tracks()
     previous_gray=gray
-    candidates=[face for face in get_static_faces([frame]) if
-        float(face.score_set['detector'])>=.45 and float(face.score_set['landmarker'])>=.55]
-    matched=registry.assign(candidates,index)
+    detected=[face for face in get_static_faces([frame]) if
+        float(face.score_set['detector'])>=.35 and float(face.score_set['landmarker'])>=.35]
+    links=motion.predict(frame,detected,index)
+    if motion.cut:registry.reset_tracks()
+    accepted=[n for n,face in enumerate(detected) if
+        (float(face.score_set['detector'])>=.45 and float(face.score_set['landmarker'])>=.55) or n in links]
+    candidates=[detected[n] for n in accepted]
+    matched=registry.assign(candidates,index,{i:links[n] for i,n in enumerate(accepted) if n in links})
+    for identity,face in matched:motion.remember(identity,face,index)
     frames[str(index)]=[{'person_id':identity,'face':pack_face(face)} for identity,face in matched]
     skipped+=len(candidates)-len(matched)
     for identity,face in matched:

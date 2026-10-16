@@ -238,7 +238,7 @@ internal sealed partial class StudioWindow : Window
     }
     private void ChooseAssignments()
     {
-        using (AssignmentWindow dialog = new AssignmentWindow(characters, assignments, personGroups))
+        using (AssignmentWindow dialog = new AssignmentWindow(characters, assignments, personGroups, analysisPath != null ? Path.Combine(Path.GetDirectoryName(analysisPath), "assignments.json") : null))
         {
             Forms.DialogResult choice = dialog.ShowDialog(new WindowOwner(this));
             assignments = dialog.Assignments; personGroups = dialog.Groups;
@@ -299,7 +299,7 @@ internal sealed partial class StudioWindow : Window
         else if (type == "ready") { localStatus.Text = Convert.ToString(message["text"]); }
         else if (type == "empty") { stage.Text = Convert.ToString(message["text"]); }
         else if (type == "error") Error(Convert.ToString(message["text"]));
-        else if (type == "characters") { analysisPath = Convert.ToString(message["analysis"]); analysisVideo = Convert.ToString(message["video"]); characters = Items(message["characters"]); stage.Text = "Найдено людей: " + characters.Length; }
+        else if (type == "characters") { analysisPath = Convert.ToString(message["analysis"]); analysisVideo = Convert.ToString(message["video"]); characters = Items(message["characters"]); assignments = message.ContainsKey("assignments") ? Items(message["assignments"]) : new object[0]; personGroups = message.ContainsKey("person_groups") ? Items(message["person_groups"]) : new object[0]; stage.Text = "Карточек: " + characters.Length + ". Групп: " + (message.ContainsKey("visible_cards") ? Convert.ToString(message["visible_cards"]) : characters.Length.ToString()); }
         else if(type=="checkpoint") {
             projectPath=Convert.ToString(message["project"]);hasPendingRender=true;RefreshControls();
         }
@@ -373,7 +373,8 @@ internal sealed partial class StudioWindow : Window
             using (AssignmentWindow dialog = new AssignmentWindow(characters, assignments, personGroups)) {
                 dialog.Show(); Forms.Application.DoEvents();
                 diagnostics["assignment_rows"] = dialog.PersonCount; diagnostics["assignment_choices"] = dialog.VerifyChoices(); diagnostics["assignment_groups"] = dialog.VerifyGrouping();
-                if (characters.Length >= 3) dialog.DiagnosticMerge(new int[] { Convert.ToInt32(((Dictionary<string,object>)characters[0])["id"]), Convert.ToInt32(((Dictionary<string,object>)characters[2])["id"]) });
+                if(input != null && input.ContainsKey("draft_check_dir")) { diagnostics["draft_persistence"] = dialog.VerifyDraftPersistence(Convert.ToString(input["draft_check_dir"])); if(!Convert.ToBoolean(diagnostics["draft_persistence"])) throw new IOException("Draft persistence check failed."); }
+                if (characters.Length >= 3 && personGroups.Length == 0) dialog.DiagnosticMerge(new int[] { Convert.ToInt32(((Dictionary<string,object>)characters[0])["id"]), Convert.ToInt32(((Dictionary<string,object>)characters[2])["id"]) });
                 using (System.Drawing.Bitmap preview = new System.Drawing.Bitmap(dialog.Width,dialog.Height)) { dialog.DrawToBitmap(preview,new System.Drawing.Rectangle(0,0,dialog.Width,dialog.Height)); preview.Save(diagnosticPath+".groups.png"); }
                 dialog.Close();
             }

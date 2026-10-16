@@ -57,6 +57,20 @@ def completed(project, report, produced_video=False):
          assignments=project.get('assignments',[]),person_groups=project.get('person_groups',[]),excluded_ranges=project.get('excluded_ranges',[]),produced_video=produced_video)
 
 
+def send_characters(analysis,scan,video):
+    from assignment_drafts import choices_for_scan
+    assignments,groups=choices_for_scan(analysis,scan,[])
+    draft_path=Path(analysis).parent/'assignments.json'
+    reviewed=json.loads(draft_path.read_text(encoding='utf-8-sig')).get('grouping_reviewed') if draft_path.exists() else False
+    if not reviewed and len(assignments)!=len(scan['characters']):
+        from auto_groups import discover_groups
+        proposed=discover_groups(analysis,progress)
+        assignments,groups=choices_for_scan(analysis,scan,proposed['groups'])
+    emit('characters',analysis=str(analysis),characters=scan['characters'],video=video,
+         assignments=assignments,person_groups=groups,
+         visible_cards=len(scan['characters'])-sum(len(g)-1 for g in groups))
+
+
 def scan_video(video):
     from ollama_local import release_model
     from people import fingerprint
@@ -67,7 +81,10 @@ def scan_video(video):
     digest=fingerprint(video)
     timeline=prepare_timeline(video,ROOT/'data/timelines'/digest[:24],progress)
     meta=metadata(timeline)
-    folder=ROOT/'data/scans'/('minutes-v3-'+digest[:24]);folder.mkdir(parents=True,exist_ok=True)
+    folder=ROOT/'data/scans'/('minutes-v4-'+digest[:24])
+    legacy=ROOT/'data/scans'/('minutes-v3-'+digest[:24])
+    if not (folder/'people.json').exists() and (legacy/'people.json').exists():folder=legacy
+    folder.mkdir(parents=True,exist_ok=True)
     with (folder/'scan.lock').open('a+b') as lock:
         if lock.tell()==0: lock.write(b'0');lock.flush()
         lock.seek(0)
@@ -76,7 +93,13 @@ def scan_video(video):
         ready=folder/'people.json'
         if ready.exists():
             scan=json.loads(ready.read_text(encoding='utf-8'))
-            emit('characters',analysis=str(ready),characters=scan['characters'],video=video)
+            from scan_compat import validate_processing
+            compatible=validate_processing(scan,video)
+            if compatible is not scan:
+                import shutil
+                if not ready.with_suffix('.before-rebase.json').exists():shutil.copy2(ready,ready.with_suffix('.before-rebase.json'))
+                atomic_json(ready,compatible)
+            send_characters(ready,compatible,video)
             return
         total=meta['frames'] or round(meta['duration']*meta['fps'])
         parts=frame_parts(0,total,meta['fps'])
@@ -104,10 +127,10 @@ def scan_video(video):
             saved=json.loads(checkpoint.read_text(encoding='utf-8'))
         characters=saved.get('characters',[])
         if not characters: raise RuntimeError('Достоверные лица в видео не найдены.')
-        scan={'tracking_version':3,'fingerprint':fingerprint(timeline),'input_fingerprint':digest,'processing_video':timeline,'meta':meta,'characters':characters,'frame_chunks':saved['frame_chunks'],
+        scan={'tracking_version':4,'fingerprint':fingerprint(timeline),'input_fingerprint':digest,'processing_video':timeline,'meta':meta,'characters':characters,'frame_chunks':saved['frame_chunks'],
               'uncertain_detections':sum(part['uncertain_detections'] for part in saved['frame_chunks'])}
         atomic_json(ready,scan)
-        emit('characters',analysis=str(ready),characters=characters,video=video)
+        send_characters(ready,scan,video)
 
 
 def checkpoint(project,done,total):
@@ -131,6 +154,9 @@ def pending_project():
 
 def main():
     job = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))
+    if job.get('action')=='swap':
+        from assignment_drafts import capture_assignments
+        capture_assignments(job)
     if job['action'] == 'startup':
         from ollama_local import ensure_running, choose_model
         status = ensure_running(ROOT / 'data')

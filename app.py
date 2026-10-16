@@ -99,6 +99,8 @@ def new_multi_project(video,analysis,assignments,person_groups=None):
         seen.add(identity)
     from person_groups import normalize_groups
     groups=normalize_groups(person_groups,known,assignments)
+    from scan_compat import validate_processing
+    scan=validate_processing(scan,video)
     processing_video=scan.get('processing_video',video)
     if fingerprint(processing_video)!=scan['fingerprint']:
         raise RuntimeError('Подготовленное видео изменилось после поиска. Выполните поиск заново.')
