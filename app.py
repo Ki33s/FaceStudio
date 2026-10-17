@@ -100,7 +100,13 @@ def new_multi_project(video,analysis,assignments,person_groups=None):
     from person_groups import normalize_groups
     groups=normalize_groups(person_groups,known,assignments)
     from scan_compat import validate_processing
-    scan=validate_processing(scan,video)
+    compatible=validate_processing(scan,video)
+    if compatible is not scan:
+        from minute_queue import atomic_json
+        ready=Path(analysis);backup=ready.with_suffix('.before-rebase.json')
+        if not backup.exists():shutil.copy2(ready,backup)
+        atomic_json(ready,compatible)
+        scan=compatible
     processing_video=scan.get('processing_video',video)
     if fingerprint(processing_video)!=scan['fingerprint']:
         raise RuntimeError('Подготовленное видео изменилось после поиска. Выполните поиск заново.')

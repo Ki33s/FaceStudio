@@ -1,8 +1,24 @@
 """Rebase a saved scan only across a verified, frame-identical timeline re-encode."""
 import json
+import subprocess
 from pathlib import Path
 from people import fingerprint
-from video_tools import metadata
+from video_tools import metadata,FFMPEG,FLAGS
+
+
+def _samples(path,indices,rate=None):
+    # Decode on the same CFR clock as discovery. OpenCV random seeks can jump
+    # ahead on VFR recordings, even when the returned timestamp looks valid.
+    select='+'.join(f'eq(n,{index})' for index in indices)
+    filters=([f'fps={rate}:start_time=0'] if rate else [])
+    filters += [f"select='{select}'",'scale=64:36','format=gray']
+    result=subprocess.run([FFMPEG,'-v','error','-i',str(path),'-map','0:v:0',
+        '-vf',','.join(filters),'-fps_mode','vfr','-frames:v',str(len(indices)),
+        '-f','rawvideo','-pix_fmt','gray','pipe:1'],capture_output=True,creationflags=FLAGS)
+    if result.returncode or len(result.stdout)!=len(indices)*64*36:
+        raise RuntimeError('Не удалось прочитать контрольные кадры. Назначения фотографий сохранены.')
+    import numpy as np
+    return np.frombuffer(result.stdout,np.uint8).reshape(len(indices),36,64).astype(float)
 
 
 def validate_processing(scan,original):
@@ -24,33 +40,13 @@ def validate_processing(scan,original):
         abs(old['duration']-new['duration'])>1/old['fps']+.001):raise RuntimeError(message)
     # A matching filename/size is insufficient. Check the original content at
     # several timestamps before accepting old geometry on the new encoding.
-    import cv2
     import numpy as np
-    videos=[cv2.VideoCapture(str(p)) for p in (original,processing)];errors=[]
-    try:
-        for portion in (.13,.31,.53,.71,.89):
-            videos[1].set(cv2.CAP_PROP_POS_MSEC,new['duration']*portion*1000)
-            ok,frame=videos[1].read()
-            if not ok:raise RuntimeError(message)
-            timestamp=videos[1].get(cv2.CAP_PROP_POS_MSEC)
-            target=cv2.resize(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),(64,36)).astype(float)
-            # OpenCV seeks VFR recordings a few frames early. Match only the
-            # nearby original frames that the CFR fps filter could repeat.
-            videos[0].set(cv2.CAP_PROP_POS_MSEC,max(0,timestamp-120));near=[]
-            for _ in range(12):
-                ok,frame=videos[0].read()
-                if not ok:break
-                observed=videos[0].get(cv2.CAP_PROP_POS_MSEC)
-                if observed>timestamp+120:break
-                if abs(observed-timestamp)<=130:
-                    image=cv2.resize(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),(64,36)).astype(float)
-                    near.append(float(np.abs(image-target).mean()))
-            if not near:raise RuntimeError(message)
-            errors.append(min(near))
-    finally:
-        for video in videos:video.release()
+    indices=sorted({min(new['frames']-1,round(new['frames']*p)) for p in (.13,.31,.53,.71,.89)})
+    reference=_samples(original,indices,new['rate'])
+    prepared=_samples(processing,indices)
+    errors=np.abs(reference-prepared).mean(axis=(1,2)).tolist()
     if max(errors)>12 or float(np.median(errors))>5:raise RuntimeError(message)
     return {**scan,'fingerprint':current,'meta':new,
             'timeline_rebase':{'previous_fingerprint':scan['fingerprint'],
                                'reason':'same source, clock, frame count and verified content',
-                               'sample_errors':errors}}
+                               'method':'ffmpeg-cfr-frame-indices','sample_errors':errors}}

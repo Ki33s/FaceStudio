@@ -4,6 +4,21 @@ from pathlib import Path
 from people import fingerprint
 
 
+def restore_legacy_draft(analysis,scan,job_folder):
+    """Recover pre-autosave choices only for this exact scan and source file."""
+    analysis=Path(analysis)
+    if (analysis.parent/'assignments.json').exists():return
+    for path in sorted(Path(job_folder).glob('*.json'),key=lambda p:p.stat().st_mtime_ns,reverse=True):
+        try:
+            job=json.loads(path.read_text(encoding='utf-8-sig'))
+            if (job.get('action')!='swap' or not job.get('analysis') or
+                Path(job['analysis']).resolve()!=analysis.resolve() or not job.get('assignments')):continue
+            if not all(Path(source).is_file() for a in job['assignments'] for source in a.get('sources',[])):continue
+            capture_assignments(job)
+            if (analysis.parent/'assignments.json').exists():return
+        except (OSError,ValueError,KeyError):continue
+
+
 def capture_assignments(job):
     if not job.get('analysis') or not job.get('assignments'):return
     analysis=Path(job['analysis']);scan=json.loads(analysis.read_text(encoding='utf-8'))

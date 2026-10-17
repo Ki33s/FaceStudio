@@ -10,7 +10,7 @@ from face_motion import FaceMotion
 VERSION=2
 
 
-def discover_groups(path,progress=None,cache_folder=None):
+def discover_groups(path,progress=None,cache_folder=None,cached_only=False):
     path=Path(path);scan=json.loads(path.read_text(encoding='utf-8'))
     folder=Path(cache_folder) if cache_folder else path.parent
     folder.mkdir(parents=True,exist_ok=True);cache=folder/'identity-groups.json'
@@ -23,6 +23,7 @@ def discover_groups(path,progress=None,cache_folder=None):
     if cache.exists():
         saved=json.loads(cache.read_text(encoding='utf-8'))
         if saved.get('signature')==signature:return saved
+    if cached_only:return {'groups':[]}
     cooccur=set();galleries={p['id']:[] for p in scan['characters']}
     for part in chunks or [None]:
         data=json.loads((path.parent/part['file']).read_text(encoding='utf-8')) if part else scan

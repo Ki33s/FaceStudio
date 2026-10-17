@@ -57,14 +57,19 @@ def completed(project, report, produced_video=False):
          assignments=project.get('assignments',[]),person_groups=project.get('person_groups',[]),excluded_ranges=project.get('excluded_ranges',[]),produced_video=produced_video)
 
 
-def send_characters(analysis,scan,video):
+def send_characters(analysis,scan,video,cached=False):
     from assignment_drafts import choices_for_scan
     assignments,groups=choices_for_scan(analysis,scan,[])
     draft_path=Path(analysis).parent/'assignments.json'
     reviewed=json.loads(draft_path.read_text(encoding='utf-8-sig')).get('grouping_reviewed') if draft_path.exists() else False
     if not reviewed and len(assignments)!=len(scan['characters']):
         from auto_groups import discover_groups
-        proposed=discover_groups(analysis,progress)
+        try:
+            proposed=discover_groups(analysis,progress,cached_only=cached)
+        except (OSError,ValueError,RuntimeError):
+            # Optional grouping must never hide saved portraits and choices.
+            traceback.print_exc(file=sys.stderr)
+            proposed={'groups':[]}
         assignments,groups=choices_for_scan(analysis,scan,proposed['groups'])
     emit('characters',analysis=str(analysis),characters=scan['characters'],video=video,
          assignments=assignments,person_groups=groups,
@@ -77,10 +82,7 @@ def scan_video(video):
     from video_tools import metadata,prepare_timeline
     from minute_queue import atomic_json,frame_parts
     import msvcrt
-    release_model(ROOT/'data')
     digest=fingerprint(video)
-    timeline=prepare_timeline(video,ROOT/'data/timelines'/digest[:24],progress)
-    meta=metadata(timeline)
     folder=ROOT/'data/scans'/('minutes-v4-'+digest[:24])
     legacy=ROOT/'data/scans'/('minutes-v3-'+digest[:24])
     if not (folder/'people.json').exists() and (legacy/'people.json').exists():folder=legacy
@@ -92,15 +94,15 @@ def scan_video(video):
         except OSError: raise RuntimeError('Поиск людей в этом видео уже запущен в другом окне.')
         ready=folder/'people.json'
         if ready.exists():
-            scan=json.loads(ready.read_text(encoding='utf-8'))
-            from scan_compat import validate_processing
-            compatible=validate_processing(scan,video)
-            if compatible is not scan:
-                import shutil
-                if not ready.with_suffix('.before-rebase.json').exists():shutil.copy2(ready,ready.with_suffix('.before-rebase.json'))
-                atomic_json(ready,compatible)
-            send_characters(ready,compatible,video)
+            from people import load_scan
+            scan=load_scan(ready,video)
+            from assignment_drafts import restore_legacy_draft
+            restore_legacy_draft(ready,scan,ROOT/'data/desktop-jobs')
+            send_characters(ready,scan,video,cached=True)
             return
+        release_model(ROOT/'data')
+        timeline=prepare_timeline(video,ROOT/'data/timelines'/digest[:24],progress)
+        meta=metadata(timeline)
         total=meta['frames'] or round(meta['duration']*meta['fps'])
         parts=frame_parts(0,total,meta['fps'])
         checkpoint=folder/'scan-checkpoint.json'
