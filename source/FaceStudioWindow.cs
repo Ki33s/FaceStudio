@@ -223,9 +223,16 @@ internal sealed class StudioWindow : Window
     private void Swap()
     {
         if (busy || loading || videoPath == null) return;
-        if (analysisVideo == videoPath && File.Exists(analysisPath) && characters.Length > 0) { ChooseAssignments(); return; }
-        analysisPath = null; characters = new object[0]; assignments = new object[0]; personGroups = new object[0];
-        StartTask("scan", new Dictionary<string, object> { { "video", videoPath } });
+        if (analysisVideo == videoPath && File.Exists(analysisPath) && characters.Length > 0 && HasPeopleProfiles()) { ChooseAssignments(); return; }
+        Dictionary<string,object> scanJob=new Dictionary<string,object> { { "video", videoPath }, { "identity_analysis", true } };
+        if(analysisVideo==videoPath && File.Exists(analysisPath) && characters.Length>0)
+            scanJob["previous"]=new Dictionary<string,object>{{"analysis",analysisPath},{"assignments",assignments},{"person_groups",personGroups}};
+        StartTask("scan",scanJob);
+    }
+    private bool HasPeopleProfiles()
+    {
+        try { Dictionary<string,object> data=Serializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(analysisPath)); return data.ContainsKey("identity_schema") && Convert.ToInt32(data["identity_schema"])>=1; }
+        catch(Exception) { return false; }
     }
     private void ChooseAssignments()
     {
@@ -287,10 +294,11 @@ internal sealed class StudioWindow : Window
     {
         string type = Convert.ToString(message["type"]);
         if (type == "progress") { stage.Text = Convert.ToString(message["text"]); progress.IsIndeterminate = message["value"] == null; if (!progress.IsIndeterminate) progress.Value = Math.Max(0, Math.Min(100, Convert.ToDouble(message["value"]) * 100)); }
+        else if (type == "notice") { report.Text = Convert.ToString(message["text"]); }
         else if (type == "ready") { localStatus.Text = Convert.ToString(message["text"]); }
         else if (type == "empty") { stage.Text = Convert.ToString(message["text"]); }
         else if (type == "error") Error(Convert.ToString(message["text"]));
-        else if (type == "characters") { analysisPath = Convert.ToString(message["analysis"]); analysisVideo = Convert.ToString(message["video"]); characters = Items(message["characters"]); assignments = message.ContainsKey("assignments") ? Items(message["assignments"]) : new object[0]; personGroups = message.ContainsKey("person_groups") ? Items(message["person_groups"]) : new object[0]; stage.Text = "Карточек: " + characters.Length + ". Групп: " + (message.ContainsKey("visible_cards") ? Convert.ToString(message["visible_cards"]) : characters.Length.ToString()); }
+        else if (type == "characters") { analysisPath = Convert.ToString(message["analysis"]); analysisVideo = Convert.ToString(message["video"]); characters = Items(message["characters"]); assignments = message.ContainsKey("assignments") ? Items(message["assignments"]) : new object[0]; personGroups = message.ContainsKey("person_groups") ? Items(message["person_groups"]) : new object[0]; stage.Text = "Карточек: " + characters.Length + ". Групп: " + (message.ContainsKey("visible_cards") ? Convert.ToString(message["visible_cards"]) : characters.Length.ToString()); if(message.ContainsKey("identity_summary")&&!String.IsNullOrWhiteSpace(Convert.ToString(message["identity_summary"]))) report.Text=Convert.ToString(message["identity_summary"]); }
         else if (type == "completed")
         {
             projectPath = Convert.ToString(message["project"]); resultPath = Convert.ToString(message["result"]); videoPath = Convert.ToString(message["video"]);
@@ -347,6 +355,9 @@ internal sealed class StudioWindow : Window
             diagnostics["restored_result"] = resultPath; diagnostics["folder_button_readable"] = folder.IsEnabled && folder.ActualHeight >= 36 && folder.FontSize >= 12;
             using (AssignmentWindow dialog = new AssignmentWindow(characters, assignments, personGroups)) {
                 dialog.Show(); Forms.Application.DoEvents();
+                diagnostics["person_profiles"] = dialog.VerifyPersonProfiles();
+                if(!Convert.ToBoolean(diagnostics["person_profiles"])) throw new IOException("People profile persistence failed.");
+                diagnostics["visible_people"] = dialog.VisibleCardCount;
                 diagnostics["assignment_rows"] = dialog.PersonCount; diagnostics["assignment_choices"] = dialog.VerifyChoices(); diagnostics["assignment_groups"] = dialog.VerifyGrouping();
                 if(input != null && input.ContainsKey("draft_check_dir")) { diagnostics["draft_persistence"] = dialog.VerifyDraftPersistence(Convert.ToString(input["draft_check_dir"])); if(!Convert.ToBoolean(diagnostics["draft_persistence"])) throw new IOException("Draft persistence check failed."); }
                 if (characters.Length >= 3 && personGroups.Length == 0) dialog.DiagnosticMerge(new int[] { Convert.ToInt32(((Dictionary<string,object>)characters[0])["id"]), Convert.ToInt32(((Dictionary<string,object>)characters[2])["id"]) });

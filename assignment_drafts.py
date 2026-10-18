@@ -31,6 +31,7 @@ def capture_assignments(job):
     from minute_queue import atomic_json
     atomic_json(path,{'assignments':job['assignments'],'person_groups':groups,'person_ids':sorted(ids),
         'input_fingerprint':scan.get('input_fingerprint',scan['fingerprint']),
+        'person_profiles':previous.get('person_profiles',scan.get('persons',[])),
         'grouping_reviewed':previous.get('grouping_reviewed',False)})
 
 
@@ -54,7 +55,7 @@ def choices_for_scan(analysis,scan,automatic_groups):
     groups=[];used=set()
     # Repeated explicit photo choices are authoritative about the requested
     # output, even when recognition cannot match a dark profile reliably.
-    if assignments:
+    if assignments and not scan.get('identity_schema'):
         photo_groups={}
         for identity in ids:
             signature=key(identity)

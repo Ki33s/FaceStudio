@@ -123,12 +123,19 @@ def new_multi_project(video,analysis,assignments,person_groups=None):
     for person in scan['characters']:
         source=Path(person['thumbnail']);dest=discovery/source.name
         shutil.copy2(source,dest);person['thumbnail']=str(dest)
+        if person.get('identity_examples'):
+            person['identity_examples']=[str(discovery/Path(path).name) for path in person['identity_examples']]
+    for person in scan.get('persons',[]):
+        person['examples']=[str(discovery/Path(path).name) for path in person.get('examples',[])]
+    from person_groups import profiles_for_scan
+    profiles=profiles_for_scan(scan,groups)
     for chunk in scan.get('frame_chunks',[]):
         shutil.copy2(Path(analysis).parent/chunk['file'],discovery/chunk['file'])
     people_path=discovery/'people.json'
     people_path.write_text(json.dumps(scan,ensure_ascii=False),encoding='utf-8')
     project.update(people_path=str(people_path),characters=scan['characters'],assignments=copied,
-                   sources=[path for item in copied for path in item['sources']],person_groups=groups)
+                   sources=[path for item in copied for path in item['sources']],person_groups=groups,
+                   identity_schema=scan.get('identity_schema',0),persons=profiles,profile_numbering=1)
     save_project(project)
     return project
 
@@ -195,15 +202,16 @@ def execute(video,main,aux,command,project,progress=gr.Progress(),automatic=Fals
             command='Техническая проверка результата'
             plan={'action':'check','start_seconds':0,'end_seconds':None,'explanation':command}
         else:
+            from person_groups import command_people
             plan,model=interpret(command,bool(project and project.get('result')),DATA,
-                known_ids=[item['person_id'] for item in project.get('assignments',[])] if project else None)
+                known_ids=command_people(project) if project else None)
         target_ids=None
         if not automatic and not resume and project and project.get('assignments'):
             requested=re.findall(r'(?:человек\w*|персонаж\w*)\s*(?:№\s*)?(\d+)',command,re.IGNORECASE)
             if requested or plan.get('person_ids'):
-                target_ids=sorted(set(map(int,requested))) if requested else sorted(set(plan['person_ids']))
-                if not set(target_ids)<={item['person_id'] for item in project['assignments']}:
-                    raise RuntimeError('Для указанного человека нет назначенного фото. Нажмите «Заменить лица» и назначьте фотографию.')
+                numbers=sorted(set(map(int,requested))) if requested else sorted(set(plan['person_ids']))
+                from person_groups import resolve_people
+                target_ids=resolve_people(project,numbers)
             # A text correction reuses mappings and the completed result.
             if plan['action']=='swap': plan['action']='repair'
         if not resume and (plan['action']=='swap' or project is None):

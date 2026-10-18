@@ -1,5 +1,42 @@
 """User-confirmed groups; rendering retains the original track IDs."""
+import hashlib
 from people import fingerprint
+
+
+def profiles_for_scan(scan,groups):
+    """Number people in exactly the same order as the assignment window."""
+    rows=scan['characters'];order={p['id']:i for i,p in enumerate(rows)}
+    groups=[list(g) for g in groups];used={i for g in groups for i in g}
+    groups += [[p['id']] for p in rows if p['id'] not in used]
+    groups.sort(key=lambda g:min(order[i] for i in g));by_id={p['id']:p for p in rows}
+    existing={tuple(sorted(p['members'])):p['uid'] for p in scan.get('persons',[])}
+    result=[]
+    for number,group in enumerate(groups,1):
+        members=sorted(group,key=order.get);key=tuple(sorted(members))
+        uid=existing.get(key) or hashlib.sha256((scan.get('input_fingerprint',scan['fingerprint'])+':'+','.join(map(str,key))).encode()).hexdigest()[:24]
+        result.append({'uid':uid,'number':number,'label':f'Человек {number}','members':members,
+            'examples':[by_id[i]['thumbnail'] for i in members[:4]],
+            'ranges':[[by_id[i]['first_seconds'],by_id[i]['last_seconds']] for i in members]})
+    return result
+
+
+def command_people(project):
+    selected={a['person_id'] for a in project.get('assignments',[])}
+    if project.get('profile_numbering')==1:
+        return [p['number'] for p in project['persons'] if selected&set(p['members'])]
+    return sorted(selected)
+
+
+def resolve_people(project,numbers):
+    selected={a['person_id'] for a in project.get('assignments',[])}
+    if project.get('profile_numbering')==1:
+        people={p['number']:set(p['members'])&selected for p in project['persons']};result=set()
+        for number in numbers:
+            if not people.get(number):raise RuntimeError('Для указанного человека нет назначенного фото. Нажмите «Заменить лица» и назначьте фотографию.')
+            result.update(people[number])
+        return sorted(result)
+    if not set(numbers)<=selected:raise RuntimeError('Для указанного человека нет назначенного фото. Нажмите «Заменить лица» и назначьте фотографию.')
+    return sorted(set(numbers))
 
 
 def normalize_groups(groups,known,assignments):

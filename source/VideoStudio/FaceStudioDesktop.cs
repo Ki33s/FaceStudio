@@ -15,8 +15,8 @@ using WpfMedia = System.Windows.Media;
 [assembly: AssemblyTitle("VideoStudio")]
 [assembly: AssemblyDescription("Cutter and FaceStudio in one native Windows application")]
 [assembly: AssemblyProduct("VideoStudio Local")]
-[assembly: AssemblyVersion("2.6.1.0")]
-[assembly: AssemblyFileVersion("2.6.1.0")]
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 
 internal static class Program
 {

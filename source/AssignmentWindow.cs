@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -17,7 +17,8 @@ internal sealed class AssignmentWindow : Form
     private sealed class PersonRow
     {
         internal int Id;
-        internal string Thumbnail;
+        internal string Thumbnail, PersonUid;
+        internal List<string> Examples = new List<string>();
         internal double First, Last;
         internal Photo Photo = new Photo();
         internal TableLayoutPanel Card;
@@ -91,7 +92,7 @@ internal sealed class AssignmentWindow : Form
         TableLayoutPanel layout=new TableLayoutPanel { Dock=DockStyle.Fill,Padding=new Padding(18),ColumnCount=1,RowCount=4 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,60));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,84));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,56));
-        layout.Controls.Add(new Label { Text="Похожие появления объединяются по движению и внешности. Ошибочную группу можно разделить. Фото и группы сохраняются автоматически после каждого изменения. Без фото — без замены.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft },0,0);
+        layout.Controls.Add(new Label { Text="Одно фото применяется ко всем появлениям человека. Дорожки проверены вперёд и назад, сцены сопоставлены по всему ролику. Ошибочную группу можно разделить. Назначения сохраняются автоматически.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleLeft },0,0);
         FlowLayoutPanel top=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=true };
         merge=MakeButton("Это один человек",185);merge.Click+=delegate { MergeSelected(null,true); };
         selectedPhoto=MakeButton("Фото выбранным",175);selectedPhoto.Click+=delegate { string path=PickPhoto();if(path==null)return;foreach(List<PersonRow> group in SelectedGroups()) ApplyPhoto(group,new Photo { Primary=path });UpdateCount(); };
@@ -110,6 +111,8 @@ internal sealed class AssignmentWindow : Form
         foreach(object value in people) {
             Dictionary<string,object> person=(Dictionary<string,object>)value;
             PersonRow row=new PersonRow { Id=Convert.ToInt32(person["id"]),Thumbnail=Convert.ToString(person["thumbnail"]),First=Convert.ToDouble(person["first_seconds"]),Last=Convert.ToDouble(person["last_seconds"]) };
+            if(person.ContainsKey("person_uid"))row.PersonUid=Convert.ToString(person["person_uid"]);
+            if(person.ContainsKey("identity_examples"))foreach(object example in (System.Collections.IEnumerable)person["identity_examples"])row.Examples.Add(Convert.ToString(example));
             if(existing.ContainsKey(row.Id))row.Photo=existing[row.Id].Copy();rows.Add(row);groups.Add(new List<PersonRow>{row});BuildCard(row);
         }
         RestoreGroups(savedGroups);
@@ -129,12 +132,24 @@ internal sealed class AssignmentWindow : Form
         if(!draftReady||draftPath==null)return;
         try {
             List<int> ids=new List<int>();foreach(PersonRow row in rows)ids.Add(row.Id);ids.Sort();
-            Dictionary<string,object> data=new Dictionary<string,object>{{"assignments",Assignments},{"person_groups",Groups},{"person_ids",ids.ToArray()},{"input_fingerprint",draftFingerprint},{"grouping_reviewed",true}};
+            Dictionary<string,object> data=new Dictionary<string,object>{{"assignments",Assignments},{"person_groups",Groups},{"person_ids",ids.ToArray()},{"input_fingerprint",draftFingerprint},{"grouping_reviewed",true},{"person_profiles",ProfileData()}};
             string temporary=draftPath+".updating";Directory.CreateDirectory(Path.GetDirectoryName(draftPath));
             File.WriteAllText(temporary,new JavaScriptSerializer { MaxJsonLength=Int32.MaxValue }.Serialize(data),new System.Text.UTF8Encoding(false));
             if(File.Exists(draftPath))File.Replace(temporary,draftPath,null);else File.Move(temporary,draftPath);
             draftError=null;
         } catch(Exception error) { draftError="Не удалось сохранить назначения: "+error.Message; }
+    }
+    private object[] ProfileData()
+    {
+        List<object> profiles=new List<object>();
+        foreach(List<PersonRow> group in groups) {
+            List<int> ids=new List<int>();List<object> ranges=new List<object>();foreach(PersonRow row in group){ids.Add(row.Id);ranges.Add(new double[]{row.First,row.Last});}ids.Sort();
+            string uid=group[0].PersonUid;bool exact=!String.IsNullOrEmpty(uid);foreach(PersonRow row in group)exact &= row.PersonUid==uid;
+            if(exact)foreach(PersonRow row in rows)if(row.PersonUid==uid&&!group.Contains(row))exact=false;
+            if(!exact)using(SHA256 hash=SHA256.Create())uid=BitConverter.ToString(hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes((draftFingerprint??"")+":"+String.Join(",",ids)))).Replace("-","").ToLowerInvariant().Substring(0,24);
+            profiles.Add(new Dictionary<string,object>{{"uid",uid},{"members",ids.ToArray()},{"ranges",ranges.ToArray()}});
+        }
+        return profiles.ToArray();
     }
     private void BuildCard(PersonRow row)
     {
@@ -230,15 +245,18 @@ internal sealed class AssignmentWindow : Form
     {
         PersonRow leader=group[0];List<string> ids=new List<string>();double first=Double.MaxValue,last=0;
         foreach(PersonRow row in group){ids.Add(row.Id.ToString());first=Math.Min(first,row.First);last=Math.Max(last,row.Last);}
-        leader.Caption.Text=(group.Count==1?"Появление "+leader.Id:"Человек "+leader.Id+"\nПоявлений: "+group.Count)+"\n"+first.ToString("0.0")+"–"+last.ToString("0.0")+" с\n→";
+        leader.Caption.Text=("Человек "+(groups.IndexOf(group)+1)+"\nПоявлений: "+group.Count)+"\n"+first.ToString("0.0")+"–"+last.ToString("0.0")+" с\n→";
         tips.SetToolTip(leader.Caption,"Карточки: "+String.Join(", ",ids.ToArray()));
-        if(group.Count==1)SetImage(leader.Original,leader.Thumbnail);else {
-            Bitmap montage=new Bitmap(240,240);using(Graphics graphics=Graphics.FromImage(montage)){graphics.Clear(BackColor);int total=Math.Min(group.Count,6),columns=Math.Min(total,2),height=240/((total+columns-1)/columns),width=240/columns;
-                for(int i=0;i<total;i++)if(File.Exists(group[i].Thumbnail))using(Image image=Image.FromFile(group[i].Thumbnail)){double scale=Math.Min((double)width/image.Width,(double)height/image.Height);int w=(int)(image.Width*scale),h=(int)(image.Height*scale);graphics.DrawImage(image,i%columns*width+(width-w)/2,i/columns*height+(height-h)/2,w,h);}
+        List<string> previews=new List<string>();bool sameProfile=!String.IsNullOrEmpty(leader.PersonUid);foreach(PersonRow row in group)sameProfile &= row.PersonUid==leader.PersonUid;
+        if(sameProfile)foreach(PersonRow row in rows)if(row.PersonUid==leader.PersonUid&&!group.Contains(row))sameProfile=false;
+        if(sameProfile)previews.AddRange(leader.Examples);if(previews.Count==0)foreach(PersonRow row in group)previews.Add(row.Thumbnail);
+        if(previews.Count==1)SetImage(leader.Original,previews[0]);else {
+            Bitmap montage=new Bitmap(240,240);using(Graphics graphics=Graphics.FromImage(montage)){graphics.Clear(BackColor);int total=Math.Min(previews.Count,6),columns=Math.Min(total,2),height=240/((total+columns-1)/columns),width=240/columns;
+                for(int i=0;i<total;i++)if(File.Exists(previews[i]))using(Image image=Image.FromFile(previews[i])){double scale=Math.Min((double)width/image.Width,(double)height/image.Height);int w=(int)(image.Width*scale),h=(int)(image.Height*scale);graphics.DrawImage(image,i%columns*width+(width-w)/2,i/columns*height+(height-h)/2,w,h);}
             }ReplaceImage(leader.Original,montage);
         }
         leader.FileName.Text=File.Exists(leader.Photo.Primary)?Path.GetFileName(leader.Photo.Primary):"Без замены";
-        if(group.Count>1)leader.FileName.Text+=" — для всей группы ("+group.Count+")";
+        if(group.Count>1)leader.FileName.Text+=" — для всех появлений ("+group.Count+")";
         leader.Additional.Text=leader.Photo.Extra.Count>0?"Дополнительных фото: "+leader.Photo.Extra.Count+" — изменить":"Ещё фото для глаз / ракурса";
         leader.Additional.Enabled=File.Exists(leader.Photo.Primary);SetImage(leader.Replacement,leader.Photo.Primary);
     }
@@ -291,6 +309,17 @@ internal sealed class AssignmentWindow : Form
     {
         ClearSelection();foreach(int id in ids)foreach(PersonRow row in rows)if(row.Id==id)GroupOf(row)[0].Selected.Checked=true;
         return MergeSelected(GroupOf(rows[0])[0].Photo.Copy(),false);
+    }
+    internal bool VerifyPersonProfiles()
+    {
+        object[] profiles=ProfileData();if(profiles.Length!=groups.Count)return false;
+        HashSet<string> uids=new HashSet<string>();HashSet<int> members=new HashSet<int>();
+        foreach(object value in profiles) {
+            Dictionary<string,object> profile=(Dictionary<string,object>)value;
+            if(!uids.Add(Convert.ToString(profile["uid"])))return false;
+            foreach(object identity in (System.Collections.IEnumerable)profile["members"])if(!members.Add(Convert.ToInt32(identity)))return false;
+        }
+        return members.Count==rows.Count;
     }
     internal bool VerifyDraftPersistence(string directory)
     {

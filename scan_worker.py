@@ -32,7 +32,7 @@ meta=metadata(job['video'])
 
 total=meta['frames'] or round(meta['duration']*meta['fps'])
 start=job.get('start_frame',0);end=min(total,job.get('end_frame') or total)
-registry=Registry(meta['fps']);motion=FaceMotion(meta['fps']);frames={};skipped=0
+registry=Registry(meta['fps']);motion=FaceMotion(meta['fps']);frames={};observed={};skipped=0
 previous_gray=None
 if start:
     previous=read_static_video_frame(job['video'],start-1)
@@ -63,7 +63,10 @@ for index in range(start,end):
     candidates=[detected[n] for n in accepted]
     matched=registry.assign(candidates,index,{i:links[n] for i,n in enumerate(accepted) if n in links})
     for identity,face in matched:motion.remember(identity,face,index)
-    frames[str(index)]=[{'person_id':identity,'face':pack_face(face)} for identity,face in matched]
+    if job.get('retain_observations'):
+        ids={id(face):identity for identity,face in matched}
+        observed[str(index)]=[{'person_id':ids.get(id(face),0),'face':pack_face(face)} for face in detected]
+    else:frames[str(index)]=[{'person_id':identity,'face':pack_face(face)} for identity,face in matched]
     skipped+=len(candidates)-len(matched)
     for identity,face in matched:
         person=registry.people[identity-1]
@@ -82,7 +85,8 @@ characters=[{'id':i+1,'label':f'Человек {i+1}','thumbnail':str(folder/f'p
     'appearances':person['count'],'first_seconds':person['first']/meta['fps'],
     'last_seconds':person['last']/meta['fps']} for i,person in enumerate(registry.people)]
 chunk_file='frames-%09d-%09d.json' % (start,end)
-atomic_json(folder/chunk_file,{'start':start,'end':end,'frames':frames,'uncertain_detections':skipped})
+atomic_json(folder/chunk_file,{'start':start,'end':end,'frames':frames,
+    **({'observations':observed,'detection_schema':1} if job.get('retain_observations') else {}),'uncertain_detections':skipped})
 people=[{**person,'vector':person['vector'].tolist()} for person in registry.people]
 chunks=saved.get('frame_chunks',[])+[{'start':start,'end':end,'file':chunk_file,'uncertain_detections':skipped}]
 atomic_json(checkpoint,{'next_frame':end,'people':people,'characters':characters,'frame_chunks':chunks})

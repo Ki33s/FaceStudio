@@ -57,12 +57,16 @@ def completed(project, report, produced_video=False):
          assignments=project.get('assignments',[]),person_groups=project.get('person_groups',[]),excluded_ranges=project.get('excluded_ranges',[]),produced_video=produced_video)
 
 
-def send_characters(analysis,scan,video,cached=False):
+def send_characters(analysis,scan,video,cached=False,previous=None):
     from assignment_drafts import choices_for_scan
     assignments,groups=choices_for_scan(analysis,scan,[])
     draft_path=Path(analysis).parent/'assignments.json'
     reviewed=json.loads(draft_path.read_text(encoding='utf-8-sig')).get('grouping_reviewed') if draft_path.exists() else False
-    if not reviewed and len(assignments)!=len(scan['characters']):
+    if previous is not None:
+        assignments=previous.get('assignments',[]);groups=previous.get('person_groups',[])
+    elif scan.get('identity_schema'):
+        assignments,groups=choices_for_scan(analysis,scan,scan.get('person_groups',[]))
+    elif not reviewed and len(assignments)!=len(scan['characters']):
         from auto_groups import discover_groups
         try:
             proposed=discover_groups(analysis,progress,cached_only=cached)
@@ -71,12 +75,44 @@ def send_characters(analysis,scan,video,cached=False):
             traceback.print_exc(file=sys.stderr)
             proposed={'groups':[]}
         assignments,groups=choices_for_scan(analysis,scan,proposed['groups'])
+    details=scan.get('identity_analysis',{})
+    summary=('Людей: '+str(len(scan.get('persons',[])))+'. Появлений: '+str(len(scan['characters']))+
+             '. Дорожки сопоставлены по всему видео и проверены в обоих направлениях.\n'+
+             'Неуверенных обнаружений оставлено без замены: '+str(details.get('unresolved_detections',0))+'.') if scan.get('identity_schema') else ''
     emit('characters',analysis=str(analysis),characters=scan['characters'],video=video,
          assignments=assignments,person_groups=groups,
+         identity_schema=scan.get('identity_schema',0),persons=scan.get('persons',[]),
+         identity_summary=summary,
          visible_cards=len(scan['characters'])-sum(len(g)-1 for g in groups))
 
 
-def scan_video(video):
+def scan_video(video,identity_analysis=False,previous=None):
+    if identity_analysis:
+        from identity_pipeline import scan_profiles
+        try:
+            analysis,scan=scan_profiles(video,ROOT,progress,previous=previous)
+        except Exception:
+            # A failed upgrade must not prevent reviewing existing cards.
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime
+            error_folder=ROOT/'data/scans'/('minutes-v5-'+__import__('people').fingerprint(video)[:24])
+            error_folder.mkdir(parents=True,exist_ok=True)
+            log=error_folder/'identity-error.log'
+            with log.open('a',encoding='utf-8') as output:output.write('\n'+datetime.now().isoformat()+'\n'+traceback.format_exc())
+            from people import fingerprint,load_scan
+            digest=fingerprint(video)
+            candidates=[ROOT/'data/scans'/f'minutes-v{version}-{digest[:24]}'/'people.json' for version in (4,3)]
+            if previous and previous.get('analysis'):candidates.insert(0,Path(previous['analysis']))
+            for ready in candidates:
+                if ready.is_file():
+                    emit('notice',text='Уточнение людей не завершено. Открыта прежняя разметка, фотографии сохранены. Лог: '+str(log))
+                    progress(None,desc='Новый анализ не завершён. Открываем сохранённые карточки; фотографии сохранены.')
+                    current=previous if previous and Path(previous.get('analysis','')).resolve()==ready.resolve() else None
+                    send_characters(ready,load_scan(ready,video),video,cached=True,previous=current)
+                    return
+            raise
+        send_characters(analysis,scan,video,cached=True)
+        return
     from ollama_local import release_model
     from people import fingerprint
     from video_tools import metadata,prepare_timeline
@@ -165,7 +201,7 @@ def main():
         emit('ready', text=status + ' Локальная модель: ' + choose_model() + '.')
         return
     if job['action']=='scan':
-        scan_video(job['video'])
+        scan_video(job['video'],job.get('identity_analysis',False),job.get('previous'))
         return
     from app import execute, load_last
     if job['action'] == 'last':
