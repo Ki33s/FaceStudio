@@ -5,6 +5,9 @@ from pathlib import Path
 import cv2,numpy as np
 from people import box_overlap,pack_face,unpack_face
 from minute_queue import atomic_json
+from joint_matching import assign
+from difficult_detection import retry_faces,unique_faces
+from face_motion import scene_changed
 
 
 def boundary_geometry(face,width,height):
@@ -36,7 +39,7 @@ def recover_continuity(job,scan):
     start=min(map(int,frames));end=max(map(int,frames))+1
     target=Path(job['target']);analysis=Path(job['people_path'])
     wanted=set(job.get('target_ids') or [item['person_id'] for item in job.get('assignments',[])])
-    signature={'version':10,'video':[str(target),target.stat().st_size,target.stat().st_mtime_ns],
+    signature={'version':12,'video':[str(target),target.stat().st_size,target.stat().st_mtime_ns],
                'scan':[str(analysis),analysis.stat().st_size,analysis.stat().st_mtime_ns],
                'range':[start,end],'wanted':sorted(wanted)}
     if scan.get('identity_groups'):signature['identity_groups']=scan['identity_groups']
@@ -58,29 +61,28 @@ def recover_continuity(job,scan):
     if wanted and all(wanted<={record['person_id'] for record in records} for records in frames.values()) and not path.exists():
         atomic_json(path,{'signature':signature,'frames':{}})
     if path.exists():
-        additions={key:records for key,records in json.loads(path.read_text(encoding='utf-8'))['frames'].items() if start<=int(key)<end}
+        additions={key:[r for r in records if not wanted or r['person_id'] in wanted]
+                   for key,records in json.loads(path.read_text(encoding='utf-8'))['frames'].items() if start<=int(key)<end}
         print('Удержание лица загружено из хронологии.',flush=True)
     else:
         print('Удержание лица при слабой разметке…',flush=True)
-        original={i:{r['person_id']:unpack_face(r['face']) for r in frames.get(str(i),[])} for i in range(start,end)}
+        # Pending ID 0 is an unresolved detector observation, not a person the
+        # user chose to keep. Named unassigned people remain protected.
+        original={i:{r['person_id']:unpack_face(r['face']) for r in frames.get(str(i),[]) if r['person_id']>0} for i in range(start,end)}
         all_ids=set(identity for records in original.values() for identity in records)
         identities=all_ids & wanted if wanted else all_ids
         anchors={identity:np.asarray([face.embedding_norm for records in original.values() for key,face in records.items() if key==identity]) for identity in all_ids}
         anchor_indices={identity:[i for i in original if identity in original[i]] for identity in identities}
         def similarity(identity,normal):return float(np.max(anchors[identity]@normal))
-        def detect(frame):
-            faces=get_static_faces([frame])
+        def detect(frame,expected):
+            faces=list(get_static_faces([frame]))
             if not any(float(f.score_set['detector'])>=.45 and float(f.score_set['landmarker'])>=.55 for f in faces):
                 saved=state_manager.get_item('face_detector_margin')
                 try:
                     state_manager.set_item('face_detector_margin',[100]*4)
                     faces+=get_many_faces([frame])
                 finally:state_manager.set_item('face_detector_margin',saved)
-            ordered=sorted(faces,key=lambda f:(float(f.score_set['landmarker'])>=.55,float(f.score_set['landmarker']) if float(f.score_set['landmarker'])>=.55 else float(f.score_set['detector'])),reverse=True)
-            unique=[]
-            for face in ordered:
-                if not any(box_overlap(face.bounding_box,other.bounding_box)>.35 for other in unique):unique.append(face)
-            return unique
+            return retry_faces(frame,expected,unique_faces(faces))
         grays={};candidates={};additions={};active={};limit=max(3,round(scan['meta']['fps']))
         scale=min(1,480/scan['meta']['width']);smallsize=(round(scan['meta']['width']*scale),round(scan['meta']['height']*scale))
         def attempt(previous,gray,oldgray,raw,existing,age,identity,frame):
@@ -100,7 +102,7 @@ def recover_continuity(job,scan):
                 if any(box_overlap(detected.bounding_box,value.bounding_box)>.35 for key,value in existing.items() if key!=identity):continue
                 embedding,normal=calculate_face_embedding(frame,points)
                 score=similarity(identity,normal)
-                other=[similarity(key,normal) for key in anchors if key!=identity]
+                other=[similarity(key,normal) for key in anchors if key!=identity and key not in identities]
                 if score<.20 or (other and score-max(other)<.08):continue
                 edge_candidates.append(detected._replace(origin='edge-track',landmark_set={**detected.landmark_set,'5/68':points.copy()},embedding=embedding,embedding_norm=normal))
             if len(edge_candidates)==1:return edge_candidates[0]
@@ -130,38 +132,62 @@ def recover_continuity(job,scan):
             if float(detected.score_set['detector'])>=.60 and plausible_five(measured) and np.linalg.norm(measured-points,axis=1).mean()<.50*eye:
                 direct_embedding,direct_normal=calculate_face_embedding(frame,measured)
                 direct_score=similarity(identity,direct_normal)
-                other=[similarity(key,direct_normal) for key in anchors if key!=identity]
+                other=[similarity(key,direct_normal) for key in anchors if key!=identity and key not in identities]
                 if direct_score>=.40 and (not other or direct_score-max(other)>=.08):
                     points=measured.astype(np.float32)
             embedding,normal=calculate_face_embedding(frame,points)
             score=similarity(identity,normal)
-            competitors=[similarity(key,normal) for key in anchors if key!=identity]
+            competitors=[similarity(key,normal) for key in anchors if key!=identity and key not in identities]
             if score<.35 or (competitors and score-max(competitors)<.08):return None
             landmarks={key:warp(value,matrix).astype(np.float32) for key,value in previous.landmark_set.items()}
             landmarks['5']=landmarks['5/68']=points
             return previous._replace(origin='track',bounding_box=expected.astype(np.float32),landmark_set=landmarks,
                 embedding=embedding,embedding_norm=normal,score_set={**previous.score_set,'detector':float(detected.score_set['detector'])})
         def direct_candidate(raw,existing,index,frame):
-            found=[]
-            for face in raw:
-                detector=float(face.score_set['detector'])
-                reliable=float(face.score_set['landmarker'])>=.55
+            proposals=[];measured={}
+            for n,face in enumerate(raw):
+                detector=float(face.score_set['detector']);reliable=float(face.score_set['landmarker'])>=.55
                 points=boundary_geometry(face,frame.shape[1],frame.shape[0]).landmark_set['5/68'] if reliable else face.landmark_set['5']
                 if detector<.35 or not plausible_five(points):continue
-                embedding,normal=calculate_face_embedding(frame,points)
-                ranked=sorted([(similarity(key,normal),key) for key in anchors],reverse=True)
-                score,identity=ranked[0]
-                if identity not in identities or identity in existing or score<(.55 if detector<.60 and not reliable else .45) or (len(ranked)>1 and score-ranked[1][0]<.08):continue
-                indexes=anchor_indices[identity];position=bisect_left(indexes,index)
-                nearest=[(abs(i-index),i,original[i][identity]) for i in indexes[max(0,position-1):position+1] if abs(i-index)<=limit]
-                if not nearest:continue
-                distance,side,anchor=min(nearest,key=lambda entry:entry[0])
-                if box_overlap(anchor.bounding_box,face.bounding_box)<.25:continue
-                if score<.55 and np.abs(cv2.resize(grays[index],(32,32)).astype(float)-cv2.resize(grays[side],(32,32))).mean()>35:continue
                 if any(box_overlap(face.bounding_box,value.bounding_box)>.35 for value in existing.values()):continue
-                found.append((identity,face._replace(origin='detect-5',landmark_set={**face.landmark_set,'5/68':points.copy()},embedding=embedding,embedding_norm=normal)))
-            counts={identity:sum(key==identity for key,_ in found) for identity,_ in found}
-            return [(identity,face) for identity,face in found if counts[identity]==1]
+                embedding,normal=calculate_face_embedding(frame,points)
+                scores={key:similarity(key,normal) for key in anchors}
+                measured[n]=face._replace(origin='detect-5',landmark_set={**face.landmark_set,'5/68':points.copy()},embedding=embedding,embedding_norm=normal)
+                for identity,score in scores.items():
+                    if identity not in identities or identity in existing or score<(.55 if detector<.60 and not reliable else .45):continue
+                    if any(value>=score-.08 for key,value in scores.items() if key not in identities and key!=identity):continue
+                    indexes=anchor_indices[identity];position=bisect_left(indexes,index)
+                    nearest=[(abs(i-index),i,original[i][identity]) for i in indexes[max(0,position-1):position+1] if abs(i-index)<=limit]
+                    if not nearest:continue
+                    overlaps=[box_overlap(anchor.bounding_box,face.bounding_box) for distance,side,anchor in nearest
+                              if score>=.55 or np.abs(cv2.resize(grays[index],(32,32)).astype(float)-cv2.resize(grays[side],(32,32))).mean()<=35]
+                    # A closer reference after a scene cut must not suppress a
+                    # compatible reference before it (or the reverse).
+                    overlap=max(overlaps,default=0)
+                    if overlap<.25:continue
+                    proposals.append((.8*score+.2*overlap,n,identity))
+            return [(identity,measured[n]) for score,n,identity in assign(proposals,margin=.08)]
+
+        def expectations(index,active):
+            boxes=[]
+            for identity in identities-original[index].keys():
+                if identity in active and abs(index-active[identity][2])<=limit:
+                    boxes.append(active[identity][0].bounding_box)
+                indexes=anchor_indices[identity];position=bisect_left(indexes,index)
+                boxes.extend(original[i][identity].bounding_box for i in indexes[max(0,position-1):position+1] if abs(i-index)<=limit)
+            return boxes
+
+        def joint_attempt(raw,existing,available,index,frame,old_index):
+            proposals=[];values={}
+            if not available or scene_changed(grays[index],grays[old_index]):return []
+            for identity,previous,age in available:
+                for n,candidate in enumerate(raw):
+                    if any(box_overlap(candidate.bounding_box,f.bounding_box)>.35 for f in existing.values()):continue
+                    recovered=attempt(previous,grays[index],grays[old_index],[candidate],existing,age,identity,frame)
+                    if recovered is None:continue
+                    score=.7*similarity(identity,recovered.embedding_norm)+.3*box_overlap(previous.bounding_box,recovered.bounding_box)
+                    values[n,identity]=recovered;proposals.append((score,n,identity))
+            return [(identity,values[n,identity]) for score,n,identity in assign(proposals,margin=.08)]
         # At most one minute is loaded by the render queue; only small grayscale
         # frames are kept for a reverse pass. No images or geometry cross cuts.
         for index in range(start,end):
@@ -169,17 +195,14 @@ def recover_continuity(job,scan):
             if frame is None:raise RuntimeError('Не удалось прочитать кадр '+str(index))
             gray=cv2.resize(cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY),smallsize);grays[index]=gray
             existing=original[index]
-            if any(identity not in existing and index-active[identity][1]<=limit for identity in active):
-                candidates[index]=detect(frame)
+            missing=[identity for identity in identities if identity not in existing and identity in active and active[identity][1]==index-1 and index-active[identity][2]<=limit]
+            if expectations(index,active):candidates[index]=detect(frame,expectations(index,active))
+            available=[(identity,active[identity][0],index-active[identity][2]) for identity in missing]
+            for identity,face in joint_attempt(candidates.get(index,[]),existing,available,index,frame,index-1):
+                additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(face)})
+                active[identity]=(face,index,active[identity][2])
             for identity in identities:
-                if identity in existing:active[identity]=(existing[identity],index,index);continue
-                if identity not in active or index==start:continue
-                previous,last,anchor=active[identity]
-                if last!=index-1:continue
-                recovered=attempt(previous,gray,grays[index-1],candidates.get(index,[]),existing,index-anchor,identity,frame)
-                if recovered is not None:
-                    additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(recovered)})
-                    active[identity]=(recovered,index,anchor)
+                if identity in existing:active[identity]=(existing[identity],index,index)
             face_store.clear_faces();read_static_video_frame.cache_clear()
             if index%30==0:print(f'Удержание лица: {index-start+1}/{end-start}',flush=True)
         active={}
@@ -189,20 +212,18 @@ def recover_continuity(job,scan):
             frame=None
             if missing:
                 frame=read_static_video_frame(job['target'],index)
-                if index not in candidates:candidates[index]=detect(frame)
+                if index not in candidates:candidates[index]=detect(frame,expectations(index,active))
+            available=[(identity,active[identity][0],active[identity][2]-index) for identity in missing]
+            for identity,face in joint_attempt(candidates.get(index,[]),existing,available,index,frame,index+1):
+                additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(face)})
+                active[identity]=(face,index,active[identity][2])
             for identity in identities:
-                if identity in original[index]:active[identity]=(original[index][identity],index,index);continue
-                if identity in existing:active.pop(identity,None);continue
-                if identity not in missing:continue
-                previous,last,anchor=active[identity]
-                recovered=attempt(previous,grays[index],grays[index+1],candidates[index],existing,anchor-index,identity,frame)
-                if recovered is not None:
-                    additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(recovered)})
-                    active[identity]=(recovered,index,anchor)
+                if identity in original[index]:active[identity]=(original[index][identity],index,index)
+                elif identity in existing:active.pop(identity,None)
             face_store.clear_faces();read_static_video_frame.cache_clear()
         for index in sorted(candidates):
             existing={**original[index],**{r['person_id']:unpack_face(r['face']) for r in additions.get(str(index),[])}}
-            if len(existing)==len(identities):continue
+            if identities<=existing.keys():continue
             frame=read_static_video_frame(job['target'],index)
             for identity,face in direct_candidate(candidates[index],existing,index,frame):
                 additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(face)})
@@ -210,6 +231,7 @@ def recover_continuity(job,scan):
             # A brief blur may destroy the current recognition embedding. Two
             # accepted anchors of the same identity and an actual detector face
             # must then agree on its location and visible feature geometry.
+            bridge=[];bridge_faces={}
             for identity in identities-existing.keys():
                 indexes=anchor_indices[identity];position=bisect_left(indexes,index)
                 if position==0 or position==len(indexes):continue
@@ -221,22 +243,24 @@ def recover_continuity(job,scan):
                 t=(index-a)/(b-a);box=left.bounding_box*(1-t)+right.bounding_box*t
                 points=left.landmark_set['5/68']*(1-t)+right.landmark_set['5/68']*t
                 eye=max(np.linalg.norm(points[1]-points[0]),30)
-                eligible=[]
-                for face in candidates[index]:
+                for n,face in enumerate(candidates[index]):
                     measured=face.landmark_set['5']
                     if float(face.score_set['detector'])<.35 or not plausible_five(measured) or box_overlap(box,face.bounding_box)<.45:continue
                     if np.linalg.norm(measured-points,axis=1).mean()>.35*eye:continue
                     if any(box_overlap(face.bounding_box,value.bounding_box)>.35 for value in existing.values()):continue
                     embedding,normal=calculate_face_embedding(frame,measured)
-                    other=[similarity(key,normal) for key in anchors if key!=identity]
+                    other=[similarity(key,normal) for key in anchors if key!=identity and key not in identities]
                     score=similarity(identity,normal)
+                    if any(scene_changed(grays[index],grays[side]) for side in (a,b)):continue
                     if scene_difference>25 and score<.55:continue
                     if anchor_similarity<.45 and score<.55:continue
                     if score<.20 or (other and score-max(other)<.08):continue
-                    eligible.append(face._replace(origin='detect-5',landmark_set={**face.landmark_set,'5/68':measured.copy()},embedding=embedding,embedding_norm=normal))
-                if len(eligible)==1:
-                    additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(eligible[0])})
-                    existing[identity]=eligible[0]
+                    bridge_faces[n,identity]=face._replace(origin='detect-5',landmark_set={**face.landmark_set,'5/68':measured.copy()},embedding=embedding,embedding_norm=normal)
+                    bridge.append((.7*score+.3*box_overlap(box,face.bounding_box),n,identity))
+            for score,n,identity in assign(bridge,margin=.08):
+                face=bridge_faces[n,identity]
+                additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(face)})
+                existing[identity]=face
             read_static_video_frame.cache_clear()
         # A gap of at most three frames can be bridged by two independent
         # feature tracks. This needs agreement in the current image and an
@@ -249,6 +273,7 @@ def recover_continuity(job,scan):
                 left=complete[a][identity];right=complete[b][identity]
                 if float(np.dot(left.embedding_norm,right.embedding_norm))<.35:continue
                 for index in range(a+1,b):
+                    if any(scene_changed(grays[index],grays[side]) for side in (a,b)):continue
                     ml,vl=motion(None,None,left.bounding_box*scale,(grays[a],grays[index]),False)
                     mr,vr=motion(None,None,right.bounding_box*scale,(grays[b],grays[index]),False)
                     if not vl or not vr:continue
@@ -275,6 +300,8 @@ def recover_continuity(job,scan):
         current=frames.setdefault(key,[]);known={record['person_id'] for record in current}
         for record in records:
             if record['person_id'] in known:continue
+            current[:]=[old for old in current if old['person_id']!=0 or
+                        box_overlap(np.asarray(old['face']['bounding_box']),np.asarray(record['face']['bounding_box']))<=.35]
             current.append(record);known.add(record['person_id']);applied.setdefault(key,[]).append(record)
     scan['coverage_signature']=digest
     scan['continued_detections']=sum(len(records) for key,records in applied.items() if job.get('start_frame',0)<=int(key)<(job.get('end_frame') or scan['meta']['frames']))

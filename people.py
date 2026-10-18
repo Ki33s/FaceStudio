@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import numpy as np
+from joint_matching import assign
 
 
 def fingerprint(path):
@@ -40,47 +41,38 @@ class Registry:
             person.pop('track_box',None);person.pop('track_embedding',None)
 
     def assign(self,faces,index,motion_links=None):
-        # One identity may occur at most once per frame. Similar competing faces
-        # are skipped instead of silently transferring another person's mapping.
-        used=set(); result=[];motion_links=motion_links or {};positions={id(face):n for n,face in enumerate(faces)}
-        for face in sorted(faces,key=lambda f:float(f.score_set['detector']),reverse=True):
+        # Build the whole face/person matrix before changing any profile.
+        motion_links=motion_links or {};proposals=[];rankings={}
+        for n,face in enumerate(faces):
             embedding=face.embedding_norm
             ranked=sorted([(max(float(np.dot(person['vector'],embedding)),
                                max(float(np.dot(sample,embedding)) for sample in person.get('gallery',[person['vector']]))),i)
-                for i,person in enumerate(self.people)],reverse=True)
-            best=ranked[0][0] if ranked else -1
-            margin=best-ranked[1][0] if len(ranked)>1 else 1
-            # Recognition alone is brittle when expression or pose changes.
-            # Only continue a recent spatial track when its appearance agrees;
-            # scene changes clear this state without forgetting identities.
-            continuous=[]
-            for i,person in enumerate(self.people):
-                if i in used or 'track_box' not in person or not 0<index-person['last']<=self.max_gap: continue
-                box=np.asarray(person['track_box']);current=face.bounding_box
-                overlap=box_overlap(box,current)
-                similarity=float(np.dot(person['track_embedding'],embedding))
-                if overlap>=.35 and similarity>=.50:
-                    continuous.append((similarity*.65+overlap*.35,i))
-            continuous.sort(reverse=True)
-            link=motion_links.get(positions[id(face)])
-            linked=link['person_id']-1 if link else -1
-            # A verified optical path between actual adjacent detections takes
-            # priority over pose-sensitive recognition, except a strong rival.
+                          for i,person in enumerate(self.people)],reverse=True)
+            rankings[n]=ranked
+            for score,i in ranked:
+                if score>=.40:proposals.append((score,n,i))
+                person=self.people[i]
+                if 'track_box' in person and 0<index-person['last']<=self.max_gap:
+                    overlap=box_overlap(np.asarray(person['track_box']),face.bounding_box)
+                    similarity=float(np.dot(person['track_embedding'],embedding))
+                    if overlap>=.35 and similarity>=.50:proposals.append((similarity*.65+overlap*.35,n,i))
+            link=motion_links.get(n);linked=link['person_id']-1 if link else -1
             linked_score=next((score for score,i in ranked if i==linked),-1)
-            if (link and 0<=linked<len(self.people) and linked not in used and
-                not (ranked and ranked[0][1]!=linked and best>=.65 and best-linked_score>=.18)):
-                identity=linked
-            elif best>=.40 and margin>=.08:
-                identity=ranked[0][1]
-                if identity in used: continue
-            elif continuous and (len(continuous)==1 or continuous[0][0]-continuous[1][0]>=.08):
-                identity=continuous[0][1]
-            elif best<.28 and float(face.score_set['detector'])>=.55 and float(face.score_set['landmarker'])>=.65:
+            if (link and 0<=linked<len(self.people) and
+                not (ranked and ranked[0][1]!=linked and ranked[0][0]>=.65 and ranked[0][0]-linked_score>=.18)):
+                proposals.append((1.+link['score'],n,linked))
+        chosen={n:i for _,n,i in assign(proposals,margin=.08)}
+        result=[]
+        for n,face in enumerate(faces):
+            embedding=face.embedding_norm;ranked=rankings[n]
+            link=motion_links.get(n);linked=link['person_id']-1 if link else -1
+            if n in chosen:identity=chosen[n]
+            else:
+                best=max([score for score,_ in ranked]+[float(np.dot(person['vector'],embedding)) for person in self.people]+[-1.])
+                if best>=.28 or float(face.score_set['detector'])<.55 or float(face.score_set['landmarker'])<.65:continue
                 identity=len(self.people)
                 self.people.append({'vector':embedding.copy(),'gallery':[embedding.tolist()],
                                     'count':0,'first':index,'last':index,'best':-1})
-            else: continue
-            used.add(identity)
             person=self.people[identity];person['count']+=1;person['last']=index
             person['track_box']=face.bounding_box.tolist()
             person['track_embedding']=embedding.tolist()

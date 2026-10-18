@@ -4,6 +4,7 @@ from pathlib import Path
 import cv2,numpy as np
 from people import box_overlap,pack_face
 from minute_queue import atomic_json
+from joint_matching import assign
 
 
 def recover_scan(job,scan):
@@ -37,7 +38,7 @@ def recover_scan(job,scan):
                     gaps.setdefault(index,[]).append((identity,edge,edge,anchor,anchor))
     if not gaps: return scan
     target=Path(job['target']);analysis=Path(job['people_path'])
-    stamp={'version':2,'target':[str(target),target.stat().st_size,target.stat().st_mtime_ns],
+    stamp={'version':3,'target':[str(target),target.stat().st_size,target.stat().st_mtime_ns],
         'scan':[str(analysis),analysis.stat().st_size,analysis.stat().st_mtime_ns],
         'range':[min(map(int,frames)),max(map(int,frames))]}
     digest=hashlib.sha256(json.dumps(stamp,sort_keys=True).encode()).hexdigest()[:24]
@@ -74,13 +75,8 @@ def recover_scan(job,scan):
                     scores=[float(np.dot(np.asarray(side['embedding_norm']),face.embedding_norm)) for side in (left,right)]
                     if overlap>=(.60 if edge else .35) and min(scores)>=(.65 if edge else .22) and max(scores)>=(.65 if edge else .35):
                         candidates.append((overlap*.35+max(scores)*.65,identity,face_index))
-            used_faces=set();used_ids=set()
-            for score,identity,face_index in sorted(candidates,reverse=True):
-                if identity in used_ids or face_index in used_faces: continue
-                competition=[s for s,i,f in candidates if (i!=identity and f==face_index) or (i==identity and f!=face_index)]
-                if competition and score-max(competition)<.08: continue
+            for score,face_index,identity in assign(((s,f,i) for s,i,f in candidates),margin=.08):
                 additions.setdefault(str(index),[]).append({'person_id':identity,'face':pack_face(faces[face_index])})
-                used_ids.add(identity);used_faces.add(face_index)
             face_store.clear_faces();read_static_video_frame.cache_clear()
             if number%30==0: print(f'Восстановление хронологии: {number+1}/{len(gaps)}',flush=True)
         atomic_json(path,{'signature':stamp,'frames':additions})

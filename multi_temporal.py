@@ -91,6 +91,7 @@ def install(job, folder):
             'excluded_ranges':protected.ranges,'excluded_frames':protected.count(start,end),
             'people_geometry':geometries,'uncertain_detections':scan.get('uncertain_detections',0)}
         report['tracking_version']=4
+        report['recovery_version']=1
         report['continued_detections']=scan.get('continued_detections',0)
         missing=[index for index in range(start,end) if not protected.contains(index) and not any(table.get(index) for table in tables.values())]
         intervals=[]

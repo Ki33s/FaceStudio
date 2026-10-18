@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 from face_motion import FaceMotion
+from joint_matching import assign
 from people import fingerprint,box_overlap
 from minute_queue import atomic_json
 from video_tools import FFMPEG,FLAGS
@@ -163,10 +164,8 @@ def _pass(db,scan,folder,signature,reverse,progress):
                     competitor=max([float(face.embedding_norm@other.embedding_norm) for _,other,label in previous if label!=track]+[-1])
                     if competitor>resemblance-.08:continue
                     proposals.append((.6*overlap+.4*resemblance,ordinal,track))
-            for score,ordinal,track in sorted(proposals,reverse=True):
-                if ordinal in links:continue
-                rivals=[s for s,n,t in proposals if (n==ordinal and t!=track) or (t==track and n!=ordinal)]
-                if rivals and score-max(rivals)<.1:continue
+            occupied={link['person_id'] for link in links.values()}
+            for score,ordinal,track in assign(proposals,margin=.1,blocked_rows=links,blocked_columns=occupied):
                 links[ordinal]={'person_id':track,'score':score,'gap':1}
             used=set();current=[]
             for ordinal,(n,face) in enumerate(detections):
@@ -358,7 +357,7 @@ def reconcile(tracks,cooccur,progress=None,temporal=None):
 def build_identity_scan(path,folder,progress=None,draft=None,legacy_path=None):
     started=time.monotonic();path=Path(path);folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     scan=json.loads(path.read_text(encoding='utf-8'));meta=scan['meta'];work=folder/'identity-work';work.mkdir(exist_ok=True)
-    signature={'version':VERSION,'motion_policy':2,'geometry_policy':1,'fingerprint':scan['fingerprint'],'input':scan.get('input_fingerprint'),
+    signature={'version':VERSION,'motion_policy':3,'geometry_policy':1,'fingerprint':scan['fingerprint'],'input':scan.get('input_fingerprint'),
         'chunks':[[p['file'],(path.parent/p['file']).stat().st_size,(path.parent/p['file']).stat().st_mtime_ns] for p in scan.get('frame_chunks',[])],
         'inline_hash':hashlib.sha256(path.read_bytes()).hexdigest() if not scan.get('frame_chunks') else None,
         'draft':hashlib.sha256(json.dumps(draft or {},sort_keys=True).encode()).hexdigest(),

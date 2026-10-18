@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 from people import box_overlap
+from joint_matching import assign
 
 
 def small_gray(frame):
@@ -67,12 +68,11 @@ class FaceMotion:
                 score=.55*overlap+.30*support+.15*max(0,similarity)
                 proposals.append((score,n,identity,support,overlap,similarity,index-track['seen']))
         self.gray,self.scale,self.tracks=gray,scale,kept
-        # Reject crowded/crossing tracks: both the row and column need a unique match.
+        # Consider all tracks together; leave globally ambiguous faces unmatched.
+        details={(p[1],p[2]):p for p in proposals}
         result={}
-        for item in sorted(proposals,reverse=True):
-            score,n,identity,*_=item
-            rivals=[p[0] for p in proposals if (p[1]==n and p[2]!=identity) or (p[2]==identity and p[1]!=n)]
-            if rivals and score-max(rivals)<.10:continue
+        for score,n,identity in assign((p[:3] for p in proposals),margin=.10):
+            item=details[n,identity]
             result[n]={'person_id':identity,'score':score,'support':item[3],
                        'overlap':item[4],'similarity':item[5],'gap':item[6]}
         return result

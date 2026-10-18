@@ -18,8 +18,10 @@ from facefusion.args import apply_args
 from facefusion import state_manager, face_store
 from facefusion.face_creator import get_static_faces
 from facefusion.vision import read_static_video_frame,write_image
-from people import Registry,pack_face,fingerprint,unpack_face
+from people import Registry,pack_face,fingerprint,unpack_face,box_overlap
 from face_motion import FaceMotion
+from joint_matching import assign
+from difficult_detection import retry_faces
 from minute_queue import atomic_json
 import numpy as np
 import cv2
@@ -58,6 +60,26 @@ for index in range(start,end):
         float(face.score_set['detector'])>=.35 and float(face.score_set['landmarker'])>=.35]
     links=motion.predict(frame,detected,index)
     if motion.cut:registry.reset_tracks()
+    else:
+        expected=[np.asarray(p['track_box']) for p in registry.people
+                  if 'track_box' in p and 0<index-p['last']<=motion.max_gap
+                  and not any(np.dot(np.asarray(p['track_embedding']),f.embedding_norm)>=.35
+                              and float(f.score_set['landmarker'])>=.55
+                              and box_overlap(np.asarray(p['track_box']),f.bounding_box)>.35 for f in detected)]
+        if expected:
+            # Retry only lost regions, even when other people are already found.
+            detected=retry_faces(frame,expected,detected)
+            detected=[f for f in detected if min(f.score_set.values())>=.35]
+            # predict() has advanced the flow once; use its measured track boxes.
+            links={}
+            candidates=[]
+            for n,face in enumerate(detected):
+                for identity,track in motion.tracks.items():
+                    overlap=box_overlap(track['box']/motion.scale,face.bounding_box)
+                    resemblance=float(np.dot(track['embedding'],face.embedding_norm))
+                    if overlap>=.5 and resemblance>=.12:candidates.append((.7*overlap+.3*max(0,resemblance),n,identity))
+            for score,row,identity in assign(candidates,margin=.1):
+                links[row]={'person_id':identity,'score':score}
     accepted=[n for n,face in enumerate(detected) if
         (float(face.score_set['detector'])>=.45 and float(face.score_set['landmarker'])>=.55) or n in links]
     candidates=[detected[n] for n in accepted]
