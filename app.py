@@ -46,6 +46,13 @@ def render_once(project,folder,start=0,end=None,strong=False,progress=None,targe
     if project.get('people_path'):
         job.update(people_path=project['people_path'],assignments=project['assignments'],
                    target_ids=target_ids,base_target=base_target,person_groups=project.get('person_groups',[]),track_cache=str(Path(project['folder'])/'track-plan'))
+    if project.get('people_path'):
+        from frame_selection import build_plan,pass_through
+        selected_path,selected_plan=build_plan(project,start,end,target_ids,progress)
+        if not selected_plan['processed_frames']:
+            if progress:progress(None,desc='Участок без подходящих лиц: сохраняем без нейросетей…')
+            return pass_through(project,folder,start,selected_plan['end'],selected_plan,base_target,base_start_frame)
+        job['processing_plan']=str(selected_path)
     manifest=folder/'job.json'
     manifest.write_text(json.dumps(job,ensure_ascii=False,indent=2),encoding='utf-8')
     with (folder/'engine.log').open('wb') as log:
@@ -144,6 +151,8 @@ def report_text(meta,geometry,vision,notes):
     text=f"Видео проверено: {meta['width']}×{meta['height']}, {meta['duration']:.2f} с. Звук: {'есть' if meta['audio'] else 'нет в исходнике'}.\n\n"
     text+='Декодирование и длительность проверены. '
     if geometry:
+        if geometry.get('selection_version'):
+            text+=f'По сохранённому плану: обработано {geometry.get("processed_frames",0)} кадров, пропущено без замены {geometry.get("skipped_frames",0)}. Пустые и неясные участки сохранены вместе со звуком. '
         if geometry.get('processing_profile')=='quality-v1':
             text+='Режим качества: 512×512, новая маска перекрытий для каждого лица на каждом кадре. '
         text+=f"Разметка проверялась на участке {geometry['start_frame']/meta['fps']:.1f}–{geometry['end_frame']/meta['fps']:.1f} с. "

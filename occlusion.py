@@ -22,7 +22,15 @@ def install(settings=None):
             import onnxruntime as ort
             options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
             path=Path(__file__).parent/'runtime/facefusion/.assets/models/xseg_1.onnx'
-            session=ort.InferenceSession(str(path),sess_options=options,providers=['CPUExecutionProvider'])
+            options.enable_mem_pattern=False;options.execution_mode=ort.ExecutionMode.ORT_SEQUENTIAL
+            try:
+                from facefusion import state_manager
+                requested=state_manager.get_item('execution_providers') or []
+                providers=['DmlExecutionProvider','CPUExecutionProvider'] if 'directml' in requested and 'DmlExecutionProvider' in ort.get_available_providers() else ['CPUExecutionProvider']
+                session=ort.InferenceSession(str(path),sess_options=options,providers=providers)
+            except Exception:
+                session=ort.InferenceSession(str(path),sess_options=options,providers=['CPUExecutionProvider'])
+            print('Маска xseg: '+', '.join(session.get_providers()),flush=True)
         resized=cv2.resize(crop,(256,256));gray=cv2.cvtColor(resized,cv2.COLOR_BGR2GRAY)
         identity=getattr(local,'identity',0);index=getattr(local,'index',0);previous=cache.get(identity)
         reuse=not settings['mask_every_frame'] and previous is not None and previous['index']==index-1 and index-previous['measured']<3 and np.abs(gray.astype(float)-previous['gray']).mean()<25
@@ -32,7 +40,14 @@ def install(settings=None):
             measured=previous['measured']
         else:
             value=resized[None].astype(np.float32)/255
-            result=session.run(None,{'input':value})[0][0,:,:,0].clip(0,1)
+            try:result=session.run(None,{'input':value})[0][0,:,:,0].clip(0,1)
+            except Exception:
+                if 'DmlExecutionProvider' not in session.get_providers():raise
+                import onnxruntime as ort
+                path=Path(__file__).parent/'runtime/facefusion/.assets/models/xseg_1.onnx'
+                session=ort.InferenceSession(str(path),providers=['CPUExecutionProvider'])
+                print('Маска xseg: запасной расчёт на CPU.',flush=True)
+                result=session.run(None,{'input':value})[0][0,:,:,0].clip(0,1)
             if settings['mask_every_frame']:
                 # Blur in the final crop scale, matching FaceFusion's mask.
                 # Blurring a 256 mask before expanding to 512 doubles feathering.

@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from protected_ranges import ProtectedFrames
+from pose_stability import smooth_measured
 from facefusion import state_manager, face_store
 from facefusion.face_creator import get_static_faces, get_many_faces
 from facefusion.face_recognizer import calculate_face_embedding
@@ -155,7 +156,7 @@ def prepare_track(job, folder):
 
 def smooth_track(job,folder,faces,matrices,links,start,total,radius,sigma,protected):
     valid = [i for i,f in enumerate(faces) if f is not None]
-    if not valid and not protected.count(start,end) and not job.get('chunked'):
+    if not valid and not protected.count(start,start+len(faces)) and not job.get('chunked'):
         raise RuntimeError('Лицо в видео не найдено. Попробуйте другой ролик.')
 
     def between(j,i):
@@ -177,12 +178,7 @@ def smooth_track(job,folder,faces,matrices,links,start,total,radius,sigma,protec
             if faces[j] is not None and (i==j or all(links[min(i,j):max(i,j)])):
                 samples.append(warp(faces[j].landmark_set['5/68'],between(j,i)))
                 weights.append(np.exp(-.5*((j-i)/sigma)**2)*max(float(faces[j].score_set['detector']),.15))
-        samples=np.asarray(samples); weights=np.asarray(weights)
-        median=np.median(samples,axis=0)
-        residual=np.linalg.norm(samples-median,axis=2).mean(axis=1)
-        eye_distance=max(np.linalg.norm(median[1]-median[0]),60)
-        weights *= np.exp(-.5*(residual/(.10*eye_distance))**2)
-        points=np.average(samples,axis=0,weights=weights)
+        points=smooth_measured(anchor.landmark_set['5/68'],samples,weights)
         landmarks=dict(anchor.landmark_set)
         landmarks['5/68']=landmarks['5']=points.astype(np.float32)
         table[start+i]=[anchor._replace(landmark_set=landmarks)]

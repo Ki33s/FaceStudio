@@ -25,6 +25,8 @@ os.chdir(ROOT / 'runtime/facefusion')
 sys.path.insert(0, str(ROOT / 'runtime/directml'))
 sys.path.insert(0, str(ROOT / 'runtime/facefusion'))
 
+from gpu_runtime import install as install_runtime_report
+install_runtime_report(job_path.parent)
 from occlusion import install as install_occlusion
 install_occlusion(settings)
 from temporal import install

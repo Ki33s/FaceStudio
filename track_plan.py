@@ -14,7 +14,7 @@ def prepare_motion(job,tracks,scan,folder):
     start=max(0,job.get('start_frame',0)-9)
     end=min(total,(job.get('end_frame') or total)+9)
     target=Path(job['target']);stat=target.stat();scan_stat=Path(job['people_path']).stat()
-    signature={'version':2,'coverage':scan.get('coverage_signature'),'target_size':stat.st_size,'target_mtime':stat.st_mtime_ns,
+    signature={'version':3,'coverage':scan.get('selection_signature') or scan.get('coverage_signature'),'target_size':stat.st_size,'target_mtime':stat.st_mtime_ns,
         'scan_size':scan_stat.st_size,'scan_mtime':scan_stat.st_mtime_ns,'fps':job['fps']}
     digest=hashlib.sha256(json.dumps(signature,sort_keys=True).encode()).hexdigest()[:24]
     cache=Path(job.get('track_cache') or folder/'track-plan');cache.mkdir(parents=True,exist_ok=True)
@@ -37,7 +37,14 @@ def prepare_motion(job,tracks,scan,folder):
     print(f'Общий проход подготовки: людей {len(missing)}, кадров {end-start}.',flush=True)
     previous=None;previous_gray=None;read_count=0
     try:
+        needed={n for identity in missing for i in range(start,end)
+                if i-1 in tracks[identity] and i in tracks[identity] for n in (i-1,i)}
         for index in range(max(0,start-1),end):
+            if index not in needed:
+                if index>=start:
+                    for identity in missing:result[identity].setdefault(str(index),{'matrix':np.eye(3).tolist(),'valid':False})
+                previous=None;previous_gray=None
+                continue
             frame=read_static_video_frame(job['target'],index)
             if frame is None: raise RuntimeError('Не удалось подготовить кадр '+str(index))
             read_count+=1;gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)

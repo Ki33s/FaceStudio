@@ -24,6 +24,11 @@ def install(job, folder):
         raise RuntimeError('Для выбранного человека не назначено фото.')
     known={item['id'] for item in scan['characters']}
     if not selected<=known: raise RuntimeError('Назначение относится к другому видео.')
+    plan=None
+    if job.get('processing_plan'):
+        from frame_selection import apply_plan
+        plan=json.loads(__import__('pathlib').Path(job['processing_plan']).read_text(encoding='utf-8'))
+        apply_plan(scan,plan)
     from person_groups import render_groups
     selected=render_groups(scan,selected,assignments,job.get('person_groups',[]))
     job={**job,'target_ids':sorted(selected)}
@@ -41,9 +46,9 @@ def install(job, folder):
         if not old_pre(mode): return False
         if mode!='output' or tables: return True
         from coverage import recover_scan
-        recover_scan(job,scan)
+        if plan is None:recover_scan(job,scan)
         from continuity import recover_continuity
-        recover_continuity(job,scan)
+        if plan is None:recover_continuity(job,scan)
         for index,records in scan['frames'].items():
             for record in records:
                 identity=record['person_id']
@@ -92,6 +97,11 @@ def install(job, folder):
             'people_geometry':geometries,'uncertain_detections':scan.get('uncertain_detections',0)}
         report['tracking_version']=4
         report['recovery_version']=1
+        if plan is not None:
+            report.update(selection_version=plan['version'],selection_signature=plan['digest'],
+                          processed_frames=plan['processed_frames'],skipped_frames=plan['skipped_frames'],
+                          rejected_faces=plan['rejected_faces'])
+            notes.append(f'План обработки: {plan["processed_frames"]} кадров с подходящими лицами; {plan["skipped_frames"]} кадров пропущено без замены. Повторный поиск слабых лиц отключён.')
         report['continued_detections']=scan.get('continued_detections',0)
         missing=[index for index in range(start,end) if not protected.contains(index) and not any(table.get(index) for table in tables.values())]
         intervals=[]
@@ -106,6 +116,16 @@ def install(job, folder):
 
     def process(index,*args):
         local.index=index
+        if plan is not None and not plan['accepted'].get(str(index)):
+            # One source frame, without five-frame context, masks or processors.
+            source=job.get('base_target') or job['target']
+            source_index=index-job.get('base_start_frame',0) if job.get('base_target') else index
+            frame=read_static_video_frame(source,source_index)
+            if frame is None:raise RuntimeError('Не удалось прочитать сохраняемый кадр '+str(index))
+            resolution=args[1]
+            if frame.shape[:2][::-1]!=resolution:frame=cv2.resize(frame,resolution)
+            if state_manager.get_item('temp_pixel_format')=='bgra':frame=cv2.cvtColor(frame,cv2.COLOR_BGR2BGRA)
+            return np.ascontiguousarray(frame)
         return old_process(index,*args)
 
     def process_frame(inputs):

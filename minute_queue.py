@@ -83,7 +83,7 @@ def summarize(report_paths, start, end):
     sample=[];seen=0;rng=random.Random(0);checks={};spans=[]
     geometry={'start_frame':start,'end_frame':end,'checked_pairs':0,'face_free_frames':0,'excluded_frames':0,
               'excluded_ranges':[],'residuals':[],'chunk_count':len(report_paths),'median_is_sampled':True,'uncertain_detections':0,
-              'recovered_detections':0,'continued_detections':0,'unswapped_segments':[],'tracking_version':4,'recovery_version':1}
+              'recovered_detections':0,'continued_detections':0,'unswapped_segments':[],'tracking_version':4,'recovery_version':1,'selection_version':3,'processed_frames':0,'skipped_frames':0,'rejected_faces':0}
     replacement={'sampled_frames':0,'changed_frames':0,'people':checks}
     for path in report_paths:
         report=json.loads(Path(path).read_text(encoding='utf-8'))
@@ -107,6 +107,8 @@ def summarize(report_paths, start, end):
         geometry['continued_detections']+=report.get('continued_detections',0)
         geometry['tracking_version']=min(geometry['tracking_version'],report.get('tracking_version',0))
         geometry['recovery_version']=min(geometry['recovery_version'],report.get('recovery_version',0))
+        geometry['selection_version']=min(geometry['selection_version'],report.get('selection_version',0))
+        for key in ('processed_frames','skipped_frames','rejected_faces'):geometry[key]+=report.get(key,0)
         geometry['unswapped_segments'].extend(report.get('unswapped_segments',[])[:max(0,120-len(geometry['unswapped_segments']))])
         geometry['excluded_ranges']=report.get('excluded_ranges',[])
         # The summary remains bounded; full problem intervals stay in part reports.
@@ -191,7 +193,7 @@ def render_minutes(project, folder, render_one, start=0, end=None, strong=False,
                 part_meta = metadata(output)
                 if abs(part_meta['duration']-(b-a)/fps) <= max(.1,2/fps):
                     report = json.loads((part_folder/'geometry.json').read_text(encoding='utf-8'))
-                    if project.get('people_path') and (report.get('tracking_version',0)<4 or report.get('recovery_version',0)<1):
+                    if project.get('people_path') and (report.get('tracking_version',0)<4 or report.get('recovery_version',0)<1 or report.get('selection_version',0)<3):
                         # Old completed parts contain the recognition gaps; a
                         # resume must render them with the corrected tracker.
                         report=None
@@ -207,7 +209,7 @@ def render_minutes(project, folder, render_one, start=0, end=None, strong=False,
             if progress: progress((index+max(0,min(1,local)))/len(parts),desc=f'Часть {index+1}/{len(parts)} · {a/fps:.0f}–{b/fps:.0f} с · {desc}')
         if report is None:
             output,report = render_one(project,part_folder,a,b,strong,part_progress,target_ids,base_target,chunked=True)
-            if not strong and report.get('suspicious_segments'):
+            if not project.get('people_path') and not strong and report.get('suspicious_segments'):
                 retry_start=max(a,int(min(x for x,y in report['suspicious_segments'])*fps))
                 retry_end=min(b,math.ceil(max(y for x,y in report['suspicious_segments'])*fps)+1)
                 retry=part_folder/'automatic-repair';retry.mkdir(exist_ok=True)
