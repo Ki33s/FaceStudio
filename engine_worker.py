@@ -29,6 +29,8 @@ from gpu_runtime import install as install_runtime_report
 install_runtime_report(job_path.parent)
 from occlusion import install as install_occlusion
 install_occlusion(settings)
+from profile_alignment import install as install_profile_alignment
+install_profile_alignment(job_path.parent)
 from temporal import install
 install(job, job_path.parent)
 

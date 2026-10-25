@@ -15,8 +15,8 @@ using WpfMedia = System.Windows.Media;
 [assembly: AssemblyTitle("FaceStudio")]
 [assembly: AssemblyDescription("Native Windows interface for local face swapping")]
 [assembly: AssemblyProduct("FaceStudio Local")]
-[assembly: AssemblyVersion("2.9.0.0")]
-[assembly: AssemblyFileVersion("2.9.0.0")]
+[assembly: AssemblyVersion("2.9.1.0")]
+[assembly: AssemblyFileVersion("2.9.1.0")]
 
 internal static class Program
 {
