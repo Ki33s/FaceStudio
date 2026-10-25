@@ -53,8 +53,16 @@ def prepare_motion(job,tracks,scan,folder):
                 for identity in missing:
                     if str(index) in result[identity]: continue
                     before=tracks[identity].get(index-1);after=tracks[identity].get(index)
-                    matrix,valid=(motion(previous,frame,before.bounding_box,(previous_gray,gray),scene_cut)
-                        if previous is not None and before is not None and after is not None else (np.eye(3),False))
+                    if before is not None and after is not None and 'occlusion-context' in (before.origin,after.origin):
+                        # Context geometry has already been checked using only
+                        # visible face features. Do not smooth it with the hand's
+                        # independently moving corners from an unmasked flow.
+                        matrix=np.eye(3);affine,inliers=cv2.estimateAffinePartial2D(before.landmark_set['68'],after.landmark_set['68'],method=cv2.LMEDS)
+                        valid=bool(affine is not None and not scene_cut and .8<np.linalg.norm(affine[0,:2])<1.25)
+                        if valid:matrix[:2]=affine
+                    else:
+                        matrix,valid=(motion(previous,frame,before.bounding_box,(previous_gray,gray),scene_cut)
+                            if previous is not None and before is not None and after is not None else (np.eye(3),False))
                     result[identity][str(index)]={'matrix':matrix.tolist(),'valid':bool(valid)}
             previous=frame;previous_gray=gray;read_static_video_frame.cache_clear()
             if index%30==0: print(f'Общая подготовка траекторий: {index-start+1}/{end-start}',flush=True)

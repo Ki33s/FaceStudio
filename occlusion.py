@@ -3,13 +3,15 @@ import threading
 from pathlib import Path
 import cv2,numpy as np
 LOCAL=threading.local()
+SOURCE_MASK=None
 
 
-def set_context(identity,index):
-    LOCAL.identity=identity;LOCAL.index=index
+def set_context(identity,index,visibility=None,original=None):
+    LOCAL.identity=identity;LOCAL.index=index;LOCAL.visibility=visibility;LOCAL.original=original
 
 
 def install(settings=None):
+    global SOURCE_MASK
     from quality import render_settings
     settings = settings or render_settings()
     from facefusion.processors.modules.face_swapper import core as swapper
@@ -67,3 +69,4 @@ def install(settings=None):
             if hasattr(local,'index'):del local.index
     swapper.create_occlusion_mask=mask
     swapper.swap_face=swap
+    SOURCE_MASK=mask

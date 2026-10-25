@@ -13,7 +13,11 @@ def profile_strength(points):
     yaw,spread,_=pose(points)
     t=float(np.clip((abs(yaw)-.20)/.25,0,1))
     compressed=float(np.clip((.65-spread)/.30,0,1))
-    return max(t*t*(3-2*t),compressed*compressed*(3-2*compressed))
+    # Looking down compresses eye-to-mouth height and exaggerates the 2-D
+    # nose offset. Two widely separated eyes are evidence against a profile;
+    # an isolated nose estimate must not switch a frontal face to partial skin.
+    broad=float(np.clip((spread-.95)/.35,0,1))
+    return max(t*t*(3-2*t)*(1-broad*broad*(3-2*broad)),compressed*compressed*(3-2*compressed))
 
 
 def visible_side(points):

@@ -20,6 +20,12 @@ def landmarks():
 
 
 class ProfileDetailsTests(unittest.TestCase):
+    def test_looking_down_with_wide_eyes_is_not_a_profile(self):
+        points=np.array([[80,70],[180,70],[110,103],[98,130],[162,130]],np.float32)
+        self.assertEqual(profile_strength(points),0.)
+    def test_turn_still_uses_partial_compositing_with_compressed_eyes(self):
+        points=np.array([[110,80],[120,80],[145,115],[112,150],[132,150]],np.float32)
+        self.assertGreater(profile_strength(points),.95)
     def setUp(self):
         self.points=landmarks();self.mask=np.ones((256,256),np.float32)
         y,x=np.mgrid[:256,:256];gray=((x+y)%180+30).astype(np.uint8)

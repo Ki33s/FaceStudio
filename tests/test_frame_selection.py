@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 import numpy as np,cv2
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT),str(ROOT/'runtime/directml')]
-from frame_selection import basic_reason,sharpness,ranges,selected_ids,apply_plan,build_plan,keep_short_dips
+from frame_selection import basic_reason,sharpness,ranges,selected_ids,apply_plan,build_plan,keep_short_dips,seed_cached_measurements
 
 def face():
     return {'bounding_box':[50,40,180,190],'score_set':{'detector':.9,'landmarker':.9},
@@ -64,9 +64,10 @@ class Selection(unittest.TestCase):
                 'frames':{'0':[{'person_id':1,'face':face()}],'1':[],'2':[{'person_id':1,'face':face()}]}}),encoding='utf-8')
             project={'folder':folder,'target':str(video),'people_path':str(scan),'assignments':[{'person_id':1,'sources':['photo']}]}
             gray=np.random.default_rng(3).integers(0,255,(240,320),dtype=np.uint8)
-            with patch('frame_selection.gray_frames',return_value=iter([(i,gray,(1.,1.)) for i in range(3)])):
+            with patch('frame_selection.gray_frames',side_effect=lambda video,meta,start,end:iter((i,gray,(1.,1.)) for i in range(start,end))):
                 path,plan=build_plan(project,0,3)
-            self.assertEqual(plan['processed_frames'],2);self.assertEqual(plan['skipped_frames'],1)
+            self.assertEqual(plan['processed_frames'],3);self.assertEqual(plan['skipped_frames'],0)
+            self.assertEqual(plan['bridged_faces'],1)
             with patch('frame_selection.gray_frames',side_effect=AssertionError('Repeated decode')):
                 self.assertEqual(build_plan(project,0,3)[1],plan)
     def test_duplicate_unknown_cannot_restore_original_over_replacement(self):
@@ -83,5 +84,61 @@ class Selection(unittest.TestCase):
             with patch('frame_selection.gray_frames',side_effect=AssertionError('Empty part decoded')):
                 _,plan=build_plan(project,0,3)
             self.assertEqual(plan['processed_frames'],0);self.assertEqual(plan['skipped_frames'],3)
+
+    def test_prior_minute_holds_clarity_entry_but_changed_assignments_cannot_seed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            stamp={'version':4,'range':[1800,3600],'source':['v',2,3],'scan':[['scan',8,10]],'selected':[1],'groups':[],'excluded':[]}
+            saved={**stamp,'range':[0,1800]}
+            (root/'prior.json').write_text(json.dumps({'stamp':saved,'start':0,'end':1800,'accepted':{'1790':[1]}}),encoding='utf8')
+            samples={1790:[self.sample(strong=False)]}
+            self.assertEqual(seed_cached_measurements(samples,root,stamp),1)
+            self.assertTrue(samples[1790][0]['strong'])
+            samples={1790:[self.sample(strong=False)]};changed={**stamp,'selected':[1,2]}
+            self.assertEqual(seed_cached_measurements(samples,root,changed),0)
+
+    def test_flow_bridge_is_applied_at_absolute_frame_and_keeps_unassigned_person(self):
+        scan={'frames':{'10':[{'person_id':2,'face':face()}]}}
+        plan={'selected':[1],'accepted':{'10':[1]},'digest':'v4','bridges':{'10':[{'person_id':1,'face':face()}]}}
+        apply_plan(scan,plan)
+        self.assertEqual([r['person_id'] for r in scan['frames']['10']],[2,1])
+        self.assertNotIn('0',scan['frames'])
+
+    def test_continuing_part_keeps_weak_but_verified_track_across_boundary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);video=root/'original.mp4';video.write_bytes(b'test');scan=root/'people.json'
+            scan.write_text(json.dumps({'meta':{'width':320,'height':240,'fps':30,'frames':120},
+                'frames':{str(i):[{'person_id':1,'face':face()}] for i in range(120)}}),encoding='utf8')
+            project={'folder':folder,'target':str(video),'people_path':str(scan),'assignments':[{'person_id':1,'sources':['photo']}]}
+            base=cv2.GaussianBlur(np.random.default_rng(7).integers(20,235,(240,320),dtype=np.uint8),(3,3),0)
+            def images(video,meta,start,end):
+                for i in range(start,end):
+                    gray=base.copy();gray[0,0]=i;yield i,gray,(1.,1.)
+            with patch('frame_selection.gray_frames',side_effect=images),patch('frame_selection.sharpness',side_effect=lambda g,*args:8.1 if g[0,0]==0 else 7.5):
+                _,first=build_plan(project,0,60);_,second=build_plan(project,60,120)
+            self.assertEqual(first['processed_frames'],60);self.assertEqual(second['processed_frames'],60)
+            self.assertEqual(second['seeded_measurements'],1)
+
+    def test_protected_frame_never_gets_a_flow_bridge(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);video=root/'original.mp4';video.write_bytes(b'test');scan=root/'people.json'
+            scan.write_text(json.dumps({'meta':{'width':320,'height':240,'fps':25,'frames':3},
+                'frames':{'0':[{'person_id':1,'face':face()}],'2':[{'person_id':1,'face':face()}]}}),encoding='utf8')
+            project={'folder':folder,'target':str(video),'people_path':str(scan),'assignments':[{'person_id':1,'sources':['photo']}],
+                     'excluded_ranges':[[.04,.08]]}
+            gray=np.random.default_rng(5).integers(20,235,(240,320),dtype=np.uint8)
+            with patch('frame_selection.gray_frames',side_effect=lambda video,meta,start,end:iter((i,gray,(1.,1.)) for i in range(start,end))):
+                _,plan=build_plan(project,0,3)
+            self.assertEqual(plan['bridged_faces'],0);self.assertNotIn('1',plan['accepted'])
+    def test_context_cannot_replace_an_unassigned_named_person(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);video=root/'original.mp4';video.write_bytes(b'test');scan=root/'people.json'
+            scan.write_text(json.dumps({'meta':{'width':320,'height':240,'fps':25,'frames':3},
+                'frames':{'0':[{'person_id':1,'face':face()}],'1':[{'person_id':2,'face':face()}],'2':[{'person_id':1,'face':face()}]}}),encoding='utf8')
+            project={'folder':folder,'target':str(video),'people_path':str(scan),'assignments':[{'person_id':1,'sources':['photo']}]}
+            gray=np.random.default_rng(5).integers(20,235,(240,320),dtype=np.uint8)
+            with patch('frame_selection.gray_frames',side_effect=lambda video,meta,start,end:iter((i,gray,(1.,1.)) for i in range(start,end))),patch('occlusion_context.Visibility.measure',side_effect=AssertionError('Unsafe inference')):
+                _,plan=build_plan(project,0,3)
+            self.assertNotIn('1',plan['accepted']);self.assertEqual(plan['occlusion_context_faces'],0)
 
 if __name__=='__main__':unittest.main()

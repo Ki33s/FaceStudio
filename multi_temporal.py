@@ -31,6 +31,8 @@ def install(job, folder):
         apply_plan(scan,plan)
     from person_groups import render_groups
     selected=render_groups(scan,selected,assignments,job.get('person_groups',[]))
+    visibility={(r['person_id'],int(index)):r['context_visibility'] for index,records in scan['frames'].items()
+                for r in records if r.get('context_visibility')}
     job={**job,'target_ids':sorted(selected)}
     tracks={identity:{} for identity in selected}
     for index, records in scan['frames'].items():
@@ -100,8 +102,12 @@ def install(job, folder):
         if plan is not None:
             report.update(selection_version=plan['version'],selection_signature=plan['digest'],
                           processed_frames=plan['processed_frames'],skipped_frames=plan['skipped_frames'],
-                          rejected_faces=plan['rejected_faces'])
-            notes.append(f'План обработки: {plan["processed_frames"]} кадров с подходящими лицами; {plan["skipped_frames"]} кадров пропущено без замены. Повторный поиск слабых лиц отключён.')
+                          rejected_faces=plan['rejected_faces'],retained_measurements=plan.get('retained_measurements',0),
+                          linked_identities=plan.get('linked_identities',0),bridged_faces=plan.get('bridged_faces',0),
+                          occlusion_context_faces=plan.get('occlusion_context_faces',0))
+            notes.append(f'План обработки: {plan["processed_frames"]} кадров с подходящими лицами; {plan["skipped_frames"]} кадров пропущено без замены. '
+                         f'Удержано реальных наблюдений: {plan.get("retained_measurements",0)}; восстановлено коротких пропусков по двум опорам: {plan.get("bridged_faces",0)}. '
+                         'Долгие пустые участки не проходят через нейросети.')
         report['continued_detections']=scan.get('continued_detections',0)
         missing=[index for index in range(start,end) if not protected.contains(index) and not any(table.get(index) for table in tables.values())]
         intervals=[]
@@ -147,7 +153,7 @@ def install(job, folder):
                 source,image=sources[identity]
                 before=frame.copy() if index in eligible[identity] else None
                 from occlusion import set_context
-                set_context(identity,index)
+                set_context(identity,index,visibility.get((identity,index)),original)
                 frame=swapper.swap_face(source,face,image,frame)
                 if before is not None:
                     pending.append((identity,face,source,before))
@@ -168,7 +174,8 @@ def install(job, folder):
             x1,y1,x2,y2=max(0,x1),max(0,y1),min(w,x2),min(h,y2)
             if x2>x1 and y2>y1:
                 delta=float(np.abs(frame[y1:y2,x1:x2].astype(float)-before[y1:y2,x1:x2]).mean())
-                _,a=calculate_face_embedding(before,face.landmark_set['5/68'])
+                reference=cv2.resize(original,frame.shape[:2][::-1]) if original.shape[:2]!=frame.shape[:2] else original
+                _,a=calculate_face_embedding(reference if job.get('base_target') else before,face.landmark_set['5/68'])
                 _,b=calculate_face_embedding(frame,face.landmark_set['5/68'])
                 samples[identity].append({'frame':index,'pixel_change':delta,
                     'source_similarity_before':float(np.dot(source.embedding_norm,a)),

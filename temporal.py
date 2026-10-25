@@ -189,7 +189,7 @@ def smooth_track(job,folder,faces,matrices,links,start,total,radius,sigma,protec
         raw.append(anchor.landmark_set['5/68']);stable.append(points)
     from profile_detail import pose_weights
     profile_weights=pose_weights(stable,links)
-    (folder/'profile-plan.json').write_text(json.dumps({'version':2,'frames':{str(start+i):v for i,v in enumerate(profile_weights)}}),encoding='utf-8')
+    (folder/'profile-plan.json').write_text(json.dumps({'version':3,'frames':{str(start+i):v for i,v in enumerate(profile_weights)}}),encoding='utf-8')
     before,after,bad,pairs=[],[],[],[]
     fps=job['fps']
     for i in range(len(faces)-1):

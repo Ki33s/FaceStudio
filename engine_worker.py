@@ -14,6 +14,12 @@ for stream in (sys.stdout,sys.stderr):
     if hasattr(stream,'reconfigure'): stream.reconfigure(encoding='utf-8',errors='replace')
 job_path = Path(sys.argv[1]).resolve()
 job = json.loads(job_path.read_text(encoding='utf-8'))
+# Record the actual worker source used by a result, so a retained old video
+# can be distinguished from a fresh run after an application update.
+import hashlib
+(job_path.parent/'runtime-code.json').write_text(json.dumps({
+    'version':'2.11','modules':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in ROOT.glob('*.py')}
+},indent=2),encoding='utf-8')
 from quality import render_settings
 settings = render_settings(job.get('processing_profile'))
 print('Режим качества: 512×512, маска каждого кадра, бережное кодирование.'
@@ -31,6 +37,8 @@ from occlusion import install as install_occlusion
 install_occlusion(settings)
 from profile_alignment import install as install_profile_alignment
 install_profile_alignment(job_path.parent,job.get('chunked',False))
+from facial_hair import install as install_facial_hair
+install_facial_hair(job_path.parent,job.get('chunked',False),bool(job.get('base_target')))
 from temporal import install
 install(job, job_path.parent)
 

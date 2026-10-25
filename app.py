@@ -69,7 +69,10 @@ def render_once(project,folder,start=0,end=None,strong=False,progress=None,targe
         raise RuntimeError('Обработка не завершилась. Лог: '+str(folder/'engine.log')+'\n'+tail)
     verify(output)
     geometry=json.loads((folder/'geometry.json').read_text(encoding='utf-8'))
-    geometry['profile_alignment_version']=2
+    geometry['profile_alignment_version']=3
+    geometry['appearance_version']=1
+    appearance_report=folder/'appearance.json'
+    if appearance_report.exists():geometry['appearance']=json.loads(appearance_report.read_text(encoding='utf-8'))
     profile_report=folder/'profile-compositing.json'
     if profile_report.exists():geometry['profile_compositing']=json.loads(profile_report.read_text(encoding='utf-8'))
     geometry['processing_profile']=settings['id']
@@ -156,6 +159,13 @@ def report_text(meta,geometry,vision,notes):
     if geometry:
         if geometry.get('selection_version'):
             text+=f'По сохранённому плану: обработано {geometry.get("processed_frames",0)} кадров, пропущено без замены {geometry.get("skipped_frames",0)}. Пустые и неясные участки сохранены вместе со звуком. '
+            if geometry.get('retained_measurements') or geometry.get('bridged_faces'):
+                text+=f'Удержано наблюдений при колебании резкости: {geometry.get("retained_measurements",0)}. Восстановлено коротких пропусков по движению с обеих сторон: {geometry.get("bridged_faces",0)}. '
+            if geometry.get('occlusion_context_faces'):
+                text+=f'Видимая часть лица восстановлена при перекрытии на {geometry["occlusion_context_faces"]} наблюдениях; закрывающие предметы сохранены. '
+        appearance=geometry.get('appearance',{})
+        if appearance.get('mustache_faces'):text+='Усы сохранены из исходных кадров. '
+        if appearance.get('beard_faces'):text+='Борода сохранена из исходных кадров. '
         if geometry.get('processing_profile')=='quality-v1':
             text+='Режим качества: 512×512, новая маска перекрытий для каждого лица на каждом кадре. '
         text+=f"Разметка проверялась на участке {geometry['start_frame']/meta['fps']:.1f}–{geometry['end_frame']/meta['fps']:.1f} с. "

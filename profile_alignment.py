@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from pose_stability import pose
 
-VERSION=2
+VERSION=3
 _LOCAL=threading.local()
 _CACHE_READY=False
 
@@ -61,7 +61,7 @@ def install(folder=None,persistent=False):
     cache=None
     if folder is not None and persistent:
         from pathlib import Path
-        cache=Path(folder).parent/'profile-state-v2.npz'
+        cache=Path(folder).parent/'profile-state-v3.npz'
         details.load(cache)
         roll_path=cache.with_suffix('.json')
         try:
