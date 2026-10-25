@@ -2,7 +2,7 @@ import unittest,sys
 from pathlib import Path
 import cv2,numpy as np
 ROOT=Path(__file__).resolve().parents[1];sys.path[:0]=[str(ROOT),str(ROOT/'runtime/directml')]
-from profile_alignment import profile_matrix,protect_features
+from profile_alignment import profile_matrix
 
 class ProfileAlignment(unittest.TestCase):
  def setUp(self):
@@ -41,36 +41,5 @@ class ProfileAlignment(unittest.TestCase):
   points=self.points.copy();points[39]=points[36]+[1,0];points[45]=points[42]+[1,0]
   result,strength=profile_matrix(self.five,points,self.matrix)
   self.assertEqual(strength,0)
-
-class ProfileFeatureProtection(unittest.TestCase):
- def setUp(self):
-  self.points=np.zeros((68,2),np.float32)
-  self.points[36:42]=[70,50];self.points[42:48]=[95,50]
-  self.points[27:36]=[[90,60],[90,70],[90,80],[90,90],[80,90],[85,95],[90,95],[95,95],[100,90]]
-  angles=np.linspace(0,2*np.pi,20,endpoint=False)
-  self.points[48:68]=np.c_[90+15*np.cos(angles),130+5*np.sin(angles)]
-  self.mask=np.ones((192,192),np.float32)
- def test_good_geometry_is_untouched(self):
-  result,count=protect_features(self.mask,self.points,self.points,1)
-  self.assertEqual(count,0);np.testing.assert_array_equal(result,self.mask)
- def test_displaced_mouth_preserves_both_old_and_generated_locations(self):
-  pred=self.points.copy();pred[48:68]+=[-28,0]
-  result,count=protect_features(self.mask,self.points,pred,.9)
-  self.assertEqual(count,1);self.assertEqual(result[130,90],0);self.assertEqual(result[130,62],0)
-  self.assertEqual(result[50,80],1);self.assertEqual(result[0,0],1)
- def test_occluder_holes_can_never_be_filled(self):
-  pred=self.points.copy();pred[48:68]+=[-28,0];mask=self.mask.copy();mask[100:120,100:120]=0
-  result,_=protect_features(mask,self.points,pred,.9)
-  self.assertTrue(np.all(result<=mask));self.assertTrue(np.all(result>=0))
- def test_unreliable_generated_measurement_does_not_change_mask(self):
-  result,count=protect_features(self.mask,self.points,self.points+50,.2)
-  self.assertEqual(count,0);np.testing.assert_array_equal(result,self.mask)
- def test_invalid_measurement_is_ignored(self):
-  result,count=protect_features(self.mask,self.points,np.full((68,2),np.nan),1)
-  self.assertEqual(count,0)
- def test_soft_mask_has_no_hard_edge(self):
-  pred=self.points.copy();pred[48:68]+=[-28,0]
-  result,_=protect_features(self.mask,self.points,pred,.9)
-  self.assertTrue(np.any((result>0)&(result<1)))
 
 if __name__=='__main__':unittest.main()

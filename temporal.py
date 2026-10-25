@@ -111,8 +111,9 @@ def prepare_track(job, folder):
     total = count_video_frame_total(path)
     radius = 8 if job.get('strong') else 5
     sigma = 3.2 if job.get('strong') else 2.2
-    start = max(0,job.get('start_frame',0)-radius-1)
-    end = min(total, (job.get('end_frame') or total)+radius+1)
+    context=max(8,radius+1)
+    start = max(0,job.get('start_frame',0)-context)
+    end = min(total, (job.get('end_frame') or total)+context)
     protected = ProtectedFrames(job)
     faces, matrices, links = [], [], []
     previous_face, previous_frame = None, None
@@ -173,16 +174,22 @@ def smooth_track(job,folder,faces,matrices,links,start,total,radius,sigma,protec
             # Keep actual face-free frames unchanged; do not invent a face on title cards.
             raw.append(None); stable.append(None); table[start+i]=[]
             continue
-        samples,weights=[],[]
+        samples,weights,dense_samples=[],[],[]
         for j in range(max(0,i-radius),min(len(faces),i+radius+1)):
             if faces[j] is not None and (i==j or all(links[min(i,j):max(i,j)])):
                 samples.append(warp(faces[j].landmark_set['5/68'],between(j,i)))
+                dense_samples.append(warp(faces[j].landmark_set['68'],between(j,i)))
                 weights.append(np.exp(-.5*((j-i)/sigma)**2)*max(float(faces[j].score_set['detector']),.15))
         points=smooth_measured(anchor.landmark_set['5/68'],samples,weights)
         landmarks=dict(anchor.landmark_set)
         landmarks['5/68']=landmarks['5']=points.astype(np.float32)
+        from profile_detail import smooth_dense
+        landmarks['68']=smooth_dense(anchor.landmark_set['68'],anchor.landmark_set['5/68'],dense_samples,samples,weights)
         table[start+i]=[anchor._replace(landmark_set=landmarks)]
         raw.append(anchor.landmark_set['5/68']);stable.append(points)
+    from profile_detail import pose_weights
+    profile_weights=pose_weights(stable,links)
+    (folder/'profile-plan.json').write_text(json.dumps({'version':2,'frames':{str(start+i):v for i,v in enumerate(profile_weights)}}),encoding='utf-8')
     before,after,bad,pairs=[],[],[],[]
     fps=job['fps']
     for i in range(len(faces)-1):
@@ -246,6 +253,9 @@ def install(job,folder):
         if index is not None and protected.contains(index): return []
         return table[index] if index in table else old_select(reference,sources,targets)
     def checked_swap(source_face,target_face,source_image,frame):
+        from occlusion import set_context
+        index=getattr(local,'index',None)
+        if index is not None:set_context(0,index)
         output=old_swap(source_face,target_face,source_image,frame)
         index=getattr(local,'index',None)
         if index in sample_frames:

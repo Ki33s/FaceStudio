@@ -30,7 +30,7 @@ install_runtime_report(job_path.parent)
 from occlusion import install as install_occlusion
 install_occlusion(settings)
 from profile_alignment import install as install_profile_alignment
-install_profile_alignment(job_path.parent)
+install_profile_alignment(job_path.parent,job.get('chunked',False))
 from temporal import install
 install(job, job_path.parent)
 
@@ -51,4 +51,10 @@ if job.get('start_frame', 0) or job.get('end_frame') is not None:
     if job.get('end_frame') is not None:
         args += ['--trim-frame-end', str(job['end_frame'])]
 sys.argv = ['facefusion.py', *args]
-runpy.run_path('facefusion.py', run_name='__main__')
+from profile_alignment import commit_cache
+try:
+    runpy.run_path('facefusion.py', run_name='__main__')
+except SystemExit as result:
+    if not result.code:commit_cache()
+    raise
+else:commit_cache()

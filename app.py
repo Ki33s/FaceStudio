@@ -69,7 +69,7 @@ def render_once(project,folder,start=0,end=None,strong=False,progress=None,targe
         raise RuntimeError('Обработка не завершилась. Лог: '+str(folder/'engine.log')+'\n'+tail)
     verify(output)
     geometry=json.loads((folder/'geometry.json').read_text(encoding='utf-8'))
-    geometry['profile_alignment_version']=1
+    geometry['profile_alignment_version']=2
     profile_report=folder/'profile-compositing.json'
     if profile_report.exists():geometry['profile_compositing']=json.loads(profile_report.read_text(encoding='utf-8'))
     geometry['processing_profile']=settings['id']

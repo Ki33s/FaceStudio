@@ -83,7 +83,7 @@ def summarize(report_paths, start, end):
     sample=[];seen=0;rng=random.Random(0);checks={};spans=[]
     geometry={'start_frame':start,'end_frame':end,'checked_pairs':0,'face_free_frames':0,'excluded_frames':0,
               'excluded_ranges':[],'residuals':[],'chunk_count':len(report_paths),'median_is_sampled':True,'uncertain_detections':0,
-              'recovered_detections':0,'continued_detections':0,'unswapped_segments':[],'tracking_version':4,'recovery_version':1,'profile_alignment_version':1,'selection_version':3,'processed_frames':0,'skipped_frames':0,'rejected_faces':0}
+              'recovered_detections':0,'continued_detections':0,'unswapped_segments':[],'tracking_version':4,'recovery_version':1,'profile_alignment_version':2,'selection_version':3,'processed_frames':0,'skipped_frames':0,'rejected_faces':0}
     replacement={'sampled_frames':0,'changed_frames':0,'people':checks}
     for path in report_paths:
         report=json.loads(Path(path).read_text(encoding='utf-8'))
@@ -197,7 +197,7 @@ def render_minutes(project, folder, render_one, start=0, end=None, strong=False,
                         # Old completed parts contain the recognition gaps; a
                         # resume must render them with the corrected tracker.
                         report=None
-                    if report is not None and report.get('profile_alignment_version',0)<1 and report.get('processed_frames',1):
+                    if report is not None and report.get('profile_alignment_version',0)<2 and report.get('processed_frames',1):
                         report=None
                     if report is not None and report.get('processing_profile')!=settings['id']:
                         # Keep the timeline checkpoint and identity assignments,
